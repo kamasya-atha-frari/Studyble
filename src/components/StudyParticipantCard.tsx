@@ -1,10 +1,12 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import { COLORS } from '../theme/tokens';
 import { StudyMode, StudyParticipant } from '../types/studyble';
 
 interface StudyParticipantCardProps {
   participant: StudyParticipant;
+  isScreenFocused?: boolean;
   isTopContributor?: boolean;
   isOnCooldown?: boolean;
   onAskPrivateChat?: (participant: StudyParticipant) => void;
@@ -40,12 +42,49 @@ const STUDY_MODE_META: Record<
 
 export function StudyParticipantCard({
   participant,
+  isScreenFocused = true,
   isTopContributor = false,
   isOnCooldown = false,
   onAskPrivateChat,
   onCycleStudyMode,
 }: StudyParticipantCardProps) {
   const modeMeta = STUDY_MODE_META[participant.studyMode];
+  const [permission, requestPermission] = useCameraPermissions();
+  const hasAutoRequestedRef = useRef<boolean>(false);
+
+  const wantsLiveCamera = Boolean(
+    participant.isCurrentUser &&
+      participant.studyMode === 'face' &&
+      isScreenFocused
+  );
+  const canRenderLiveCamera = Boolean(wantsLiveCamera && permission?.granted);
+
+  useEffect(() => {
+    if (!wantsLiveCamera) {
+      hasAutoRequestedRef.current = false;
+      return;
+    }
+
+    if (permission?.granted || hasAutoRequestedRef.current) {
+      return;
+    }
+
+    if (permission === null || permission.canAskAgain) {
+      hasAutoRequestedRef.current = true;
+      void requestPermission().catch(() => {});
+    }
+  }, [wantsLiveCamera, permission, requestPermission]);
+
+  const handleRequestCameraPermission = () => {
+    void requestPermission().catch(() => {});
+  };
+
+  const permissionBlocked = Boolean(
+    wantsLiveCamera &&
+      permission &&
+      !permission.granted &&
+      permission.canAskAgain === false
+  );
 
   return (
     <View
@@ -57,41 +96,77 @@ export function StudyParticipantCard({
       ]}
     >
       {/* Visual Study Mode Stage */}
-      <View style={[styles.visualStage, { backgroundColor: modeMeta.stageBg }]}>
-        <View style={styles.stageTopRow}>
-          <View style={[styles.modePill, { backgroundColor: modeMeta.pillBg }]}>
-            <Text style={[styles.modePillText, { color: modeMeta.pillText }]}>
-              {modeMeta.icon} {modeMeta.label}
-            </Text>
-          </View>
-
-          {isTopContributor && !participant.isBot ? (
-            <View style={styles.topWeeklyPill}>
-              <Text style={styles.topWeeklyText}>
-                ★ Top · {participant.weeklyHelpfulCount}
-              </Text>
+      <View
+        style={[
+          styles.visualStage,
+          { backgroundColor: modeMeta.stageBg },
+          canRenderLiveCamera && styles.visualStageCamera,
+        ]}
+      >
+        {canRenderLiveCamera ? (
+          <View style={styles.cameraContainer}>
+            <CameraView facing="front" style={styles.cameraPreview} />
+            <View style={styles.cameraOverlayTop}>
+              <View style={[styles.modePill, { backgroundColor: modeMeta.pillBg }]}>
+                <Text style={[styles.modePillText, { color: modeMeta.pillText }]}>
+                  ● Live Cam
+                </Text>
+              </View>
             </View>
-          ) : null}
-        </View>
-
-        <View
-          style={[
-            styles.avatarCircle,
-            participant.studyMode === 'desk' && styles.deskFrame,
-            participant.studyMode === 'face' && styles.faceFrame,
-          ]}
-        >
-          <Text style={styles.avatarEmoji}>{participant.avatarEmoji}</Text>
-        </View>
-
-        {participant.studyMode === 'desk' ? (
-          <Text style={styles.stageSubLabel}>Desk lamp on</Text>
-        ) : participant.studyMode === 'face' ? (
-          <Text style={styles.stageSubLabel}>Cam focus active</Text>
+          </View>
         ) : (
-          <Text style={styles.stageSubLabel}>
-            {participant.isBot ? 'Companion bot' : 'Calm avatar'}
-          </Text>
+          <>
+            <View style={styles.stageTopRow}>
+              <View style={[styles.modePill, { backgroundColor: modeMeta.pillBg }]}>
+                <Text style={[styles.modePillText, { color: modeMeta.pillText }]}>
+                  {modeMeta.icon} {modeMeta.label}
+                </Text>
+              </View>
+
+              {isTopContributor && !participant.isBot ? (
+                <View style={styles.topWeeklyPill}>
+                  <Text style={styles.topWeeklyText}>
+                    ★ Top · {participant.weeklyHelpfulCount}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+
+            <View
+              style={[
+                styles.avatarCircle,
+                participant.studyMode === 'desk' && styles.deskFrame,
+                participant.studyMode === 'face' && styles.faceFrame,
+              ]}
+            >
+              <Text style={styles.avatarEmoji}>{participant.avatarEmoji}</Text>
+            </View>
+
+            {wantsLiveCamera ? (
+              permissionBlocked ? (
+                <Text style={styles.permissionDeniedText} numberOfLines={2}>
+                  Camera permission blocked — enable in Settings
+                </Text>
+              ) : (
+                <Pressable
+                  style={styles.permissionBtn}
+                  onPress={handleRequestCameraPermission}
+                >
+                  <Text style={styles.permissionBtnText}>
+                    Tap to allow camera
+                  </Text>
+                </Pressable>
+              )
+            ) : participant.studyMode === 'desk' ? (
+              <Text style={styles.stageSubLabel}>Desk lamp on</Text>
+            ) : participant.studyMode === 'face' ? (
+              <Text style={styles.stageSubLabel}>Cam focus active</Text>
+            ) : (
+              <Text style={styles.stageSubLabel}>
+                {participant.isBot ? 'Companion bot' : 'Calm avatar'}
+              </Text>
+            )}
+          </>
         )}
       </View>
 
@@ -191,6 +266,31 @@ const styles = StyleSheet.create({
     padding: 8,
     alignItems: 'center',
     gap: 5,
+    minHeight: 96,
+    justifyContent: 'center',
+  },
+  visualStageCamera: {
+    padding: 0,
+    overflow: 'hidden',
+    backgroundColor: COLORS.navy,
+  },
+  cameraContainer: {
+    width: '100%',
+    height: 96,
+    borderRadius: 10,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  cameraPreview: {
+    width: '100%',
+    height: '100%',
+  },
+  cameraOverlayTop: {
+    position: 'absolute',
+    top: 6,
+    left: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   stageTopRow: {
     width: '100%',
@@ -244,6 +344,23 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '600',
     color: COLORS.textMuted,
+  },
+  permissionBtn: {
+    backgroundColor: COLORS.sage,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
+  permissionBtnText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.surface,
+  },
+  permissionDeniedText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: COLORS.danger,
+    textAlign: 'center',
   },
   infoBlock: {
     gap: 4,

@@ -583,6 +583,7 @@ export function LiveRoomScreen({
                     <View style={styles.gridCell}>
                       <StudyParticipantCard
                         participant={item}
+                        isScreenFocused={isFocused}
                         isTopContributor={topContributorIds.has(item.id)}
                         isOnCooldown={cooldownMs > 0}
                         onAskPrivateChat={(peer) => setActiveChatPeer(peer)}
