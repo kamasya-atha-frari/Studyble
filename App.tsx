@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, SafeAreaView, StyleSheet, Text } from 'react-native';
+import { StatusBar } from 'expo-status-bar';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
@@ -12,6 +13,7 @@ import {
   INITIAL_PROFILE,
   INITIAL_QUESTIONS,
   INITIAL_ROOMS,
+  VERIFIED_VOTE_THRESHOLD,
   loadStudybleData,
   resetStudybleData,
   saveProfile,
@@ -19,7 +21,19 @@ import {
   saveRooms,
 } from './src/storage/storage';
 import { COLORS } from './src/theme/tokens';
-import { QuestionItem, StudyProfileState, StudyRoom } from './src/types/studyble';
+import {
+  AmbientMixerState,
+  LiveMessageKind,
+  QuestionItem,
+  StudyMode,
+  StudyProfileState,
+  StudyRoom,
+} from './src/types/studyble';
+import {
+  PRIVATE_CHAT_COOLDOWN_MS,
+  PRIVATE_HELP_REWARD_POINTS,
+  getPeerCooldownRemainingMs,
+} from './src/utils/progression';
 
 type RootTabParamList = {
   RoomsTab: undefined;
@@ -47,96 +61,181 @@ export default function App() {
   const [questions, setQuestions] = useState<QuestionItem[]>(INITIAL_QUESTIONS);
   const [profile, setProfile] = useState<StudyProfileState>(INITIAL_PROFILE);
 
+  const profileRef = useRef<StudyProfileState>(profile);
   useEffect(() => {
+    profileRef.current = profile;
+  }, [profile]);
+
+  useEffect(() => {
+    let active = true;
     (async () => {
       const data = await loadStudybleData();
+      if (!active) return;
       setRooms(data.rooms);
       setQuestions(data.questions);
       setProfile(data.profile);
       setIsLoading(false);
     })();
+    return () => {
+      active = false;
+    };
   }, []);
 
-  const handleEnterLiveRoom = (roomId: string) => {
-    const updated = rooms.map((room) => {
-      if (room.id !== roomId || room.isJoined) return room;
-      return {
-        ...room,
-        isJoined: true,
-        activeStudents: room.activeStudents + 1,
-      };
+  const handleEnterLiveRoom = useCallback((roomId: string) => {
+    setRooms((prev) => {
+      const updated = prev.map((room) => {
+        if (room.id !== roomId || room.isJoined) return room;
+        return {
+          ...room,
+          isJoined: true,
+          activeStudents: room.activeStudents + 1,
+        };
+      });
+      void saveRooms(updated);
+      return updated;
     });
-    setRooms(updated);
-    saveRooms(updated);
-  };
+  }, []);
 
-  const handleLeaveRoom = (roomId: string) => {
-    const updated = rooms.map((room) => {
-      if (room.id !== roomId || !room.isJoined) return room;
-      return {
-        ...room,
-        isJoined: false,
-        activeStudents: Math.max(0, room.activeStudents - 1),
-      };
+  const handleLeaveRoom = useCallback((roomId: string) => {
+    setRooms((prev) => {
+      const updated = prev.map((room) => {
+        if (room.id !== roomId || !room.isJoined) return room;
+        return {
+          ...room,
+          isJoined: false,
+          activeStudents: Math.max(0, room.activeStudents - 1),
+        };
+      });
+      void saveRooms(updated);
+      return updated;
     });
-    setRooms(updated);
-    saveRooms(updated);
-  };
+  }, []);
 
-  const handleSendLiveMessage = (roomId: string, text: string, isQuestion: boolean) => {
-    const updated = rooms.map((room) => {
-      if (room.id !== roomId) return room;
-      return {
-        ...room,
-        messages: [
-          {
-            id: `m-${Date.now()}`,
-            sender: profile.studentName,
-            text,
-            isQuestion,
-            votes: isQuestion ? 1 : 0,
-            hasVoted: isQuestion,
-            createdAt: 'Just now',
-          },
-          ...room.messages,
-        ],
-      };
-    });
-    setRooms(updated);
-    saveRooms(updated);
-  };
-
-  const handleToggleLiveVote = (roomId: string, messageId: string) => {
-    const updated = rooms.map((room) => {
-      if (room.id !== roomId) return room;
-      return {
-        ...room,
-        messages: room.messages.map((msg) => {
-          if (msg.id !== messageId) return msg;
-          const nextVoted = !msg.hasVoted;
+  const handleSendLiveMessage = useCallback(
+    (roomId: string, text: string, kind: LiveMessageKind) => {
+      setRooms((prev) => {
+        const initialVotes = kind === 'question' ? 1 : 0;
+        const updated = prev.map((room) => {
+          if (room.id !== roomId) return room;
           return {
-            ...msg,
-            hasVoted: nextVoted,
-            votes: Math.max(0, msg.votes + (nextVoted ? 1 : -1)),
+            ...room,
+            messages: [
+              {
+                id: `m-${Date.now()}`,
+                sender: profileRef.current.studentName,
+                text,
+                kind,
+                votes: initialVotes,
+                hasVoted: kind === 'question',
+                verified: initialVotes >= VERIFIED_VOTE_THRESHOLD,
+                createdAt: 'Just now',
+              },
+              ...room.messages,
+            ],
           };
-        }),
-      };
+        });
+        void saveRooms(updated);
+        return updated;
+      });
+    },
+    []
+  );
+
+  const handleToggleLiveVote = useCallback((roomId: string, messageId: string) => {
+    setRooms((prev) => {
+      const updated = prev.map((room) => {
+        if (room.id !== roomId) return room;
+        return {
+          ...room,
+          messages: room.messages.map((msg) => {
+            if (msg.id !== messageId) return msg;
+            const nextVoted = !msg.hasVoted;
+            const nextVotes = Math.max(0, msg.votes + (nextVoted ? 1 : -1));
+            return {
+              ...msg,
+              hasVoted: nextVoted,
+              votes: nextVotes,
+              verified: nextVotes >= VERIFIED_VOTE_THRESHOLD,
+            };
+          }),
+        };
+      });
+      void saveRooms(updated);
+      return updated;
     });
-    setRooms(updated);
-    saveRooms(updated);
-  };
+  }, []);
 
-  const handleSessionComplete = (_minutes: number) => {
+  const handleSessionComplete = useCallback((minutes: number) => {
+    const earnedMinutes = Math.max(1, Math.floor(minutes));
+    setProfile((prev) => {
+      const updatedProfile: StudyProfileState = {
+        ...prev,
+        completedSessions: prev.completedSessions + 1,
+        completedFocusMinutes: prev.completedFocusMinutes + earnedMinutes,
+        points: prev.points + 5,
+      };
+      void saveProfile(updatedProfile);
+      return updatedProfile;
+    });
+  }, []);
+
+  const handleUpdateAmbientMixer = useCallback((ambientMixer: AmbientMixerState) => {
+    setProfile((prev) => {
+      const updated: StudyProfileState = { ...prev, ambientMixer };
+      void saveProfile(updated);
+      return updated;
+    });
+  }, []);
+
+  const handleChangeStudyMode = useCallback((studyMode: StudyMode) => {
+    setProfile((prev) => {
+      const updated: StudyProfileState = { ...prev, studyMode };
+      void saveProfile(updated);
+      return updated;
+    });
+  }, []);
+
+  const handleCompletePrivateHelp = useCallback((peerId: string) => {
+    const now = Date.now();
+    const current = profileRef.current;
+    const remainingMs = getPeerCooldownRemainingMs(
+      current.privateChatCooldowns,
+      peerId,
+      now
+    );
+
+    if (remainingMs > 0) {
+      return { awarded: false, remainingMs };
+    }
+
     const updatedProfile: StudyProfileState = {
-      ...profile,
-      completedSessions: profile.completedSessions + 1,
-      points: profile.points + 5,
+      ...current,
+      points: current.points + PRIVATE_HELP_REWARD_POINTS,
+      privateChatCooldowns: {
+        ...current.privateChatCooldowns,
+        [peerId]: now,
+      },
     };
+    profileRef.current = updatedProfile;
     setProfile(updatedProfile);
-    saveProfile(updatedProfile);
-  };
+    void saveProfile(updatedProfile);
 
-  const handleAddQuestion = (title: string, detail: string, topic: string) => {
+    return { awarded: true, remainingMs: PRIVATE_CHAT_COOLDOWN_MS };
+  }, []);
+
+  const handleUnlockBadge = useCallback((badgeName: string) => {
+    setProfile((prev) => {
+      if (prev.specialistBadges.includes(badgeName)) return prev;
+      const updated: StudyProfileState = {
+        ...prev,
+        specialistBadges: [badgeName, ...prev.specialistBadges],
+      };
+      void saveProfile(updated);
+      return updated;
+    });
+  }, []);
+
+  const handleAddQuestion = useCallback((title: string, detail: string, topic: string) => {
     const newQuestion: QuestionItem = {
       id: `q-${Date.now()}`,
       title,
@@ -146,69 +245,82 @@ export default function App() {
       hasVoted: true,
       answers: [],
     };
-    const updated = [newQuestion, ...questions];
-    setQuestions(updated);
-    saveQuestions(updated);
-
-    const updatedProfile = { ...profile, points: profile.points + 1 };
-    setProfile(updatedProfile);
-    saveProfile(updatedProfile);
-  };
-
-  const handleToggleVote = (questionId: string) => {
-    const updated = questions.map((q) => {
-      if (q.id !== questionId) return q;
-      const nextVoted = !q.hasVoted;
-      return {
-        ...q,
-        hasVoted: nextVoted,
-        votes: Math.max(0, q.votes + (nextVoted ? 1 : -1)),
-      };
+    setQuestions((prev) => {
+      const updated = [newQuestion, ...prev];
+      void saveQuestions(updated);
+      return updated;
     });
-    setQuestions(updated);
-    saveQuestions(updated);
-  };
 
-  const handleAddAnswer = (questionId: string, body: string) => {
-    const updated = questions.map((q) => {
-      if (q.id !== questionId) return q;
-      return {
-        ...q,
-        answers: [
-          ...q.answers,
-          {
-            id: `a-${Date.now()}`,
-            author: profile.studentName,
-            body,
-            createdAt: 'Just now',
-          },
-        ],
-      };
+    setProfile((prev) => {
+      const updatedProfile = { ...prev, points: prev.points + 1 };
+      void saveProfile(updatedProfile);
+      return updatedProfile;
     });
-    setQuestions(updated);
-    saveQuestions(updated);
+  }, []);
 
-    const updatedProfile = { ...profile, points: profile.points + 3 };
-    setProfile(updatedProfile);
-    saveProfile(updatedProfile);
-  };
+  const handleToggleVote = useCallback((questionId: string) => {
+    setQuestions((prev) => {
+      const updated = prev.map((q) => {
+        if (q.id !== questionId) return q;
+        const nextVoted = !q.hasVoted;
+        return {
+          ...q,
+          hasVoted: nextVoted,
+          votes: Math.max(0, q.votes + (nextVoted ? 1 : -1)),
+        };
+      });
+      void saveQuestions(updated);
+      return updated;
+    });
+  }, []);
 
-  const handleUpdateProfile = (next: Partial<StudyProfileState>) => {
-    const updated = { ...profile, ...next };
-    setProfile(updated);
-    saveProfile(updated);
-  };
+  const handleAddAnswer = useCallback((questionId: string, body: string) => {
+    setQuestions((prev) => {
+      const updated = prev.map((q) => {
+        if (q.id !== questionId) return q;
+        return {
+          ...q,
+          answers: [
+            ...q.answers,
+            {
+              id: `a-${Date.now()}`,
+              author: profileRef.current.studentName,
+              body,
+              createdAt: 'Just now',
+            },
+          ],
+        };
+      });
+      void saveQuestions(updated);
+      return updated;
+    });
 
-  const handleResetAll = async () => {
+    setProfile((prev) => {
+      const updatedProfile = { ...prev, points: prev.points + 3 };
+      void saveProfile(updatedProfile);
+      return updatedProfile;
+    });
+  }, []);
+
+  const handleUpdateProfile = useCallback((next: Partial<StudyProfileState>) => {
+    setProfile((prev) => {
+      const updated = { ...prev, ...next };
+      void saveProfile(updated);
+      return updated;
+    });
+  }, []);
+
+  const handleResetAll = useCallback(async () => {
     await resetStudybleData();
     setRooms(INITIAL_ROOMS);
     setQuestions(INITIAL_QUESTIONS);
     setProfile(INITIAL_PROFILE);
-  };
+  }, []);
 
   if (isLoading) {
     return (
       <SafeAreaView style={styles.loadingContainer}>
+        <StatusBar style="dark" />
         <ActivityIndicator size="large" color={COLORS.coral} />
         <Text style={styles.loadingText}>Loading Studyble...</Text>
       </SafeAreaView>
@@ -217,14 +329,15 @@ export default function App() {
 
   return (
     <NavigationContainer>
+      <StatusBar style="dark" />
       <Tab.Navigator
         screenOptions={{
           headerShown: false,
-          tabBarActiveTintColor: COLORS.coral,
+          tabBarActiveTintColor: COLORS.sage,
           tabBarInactiveTintColor: COLORS.textMuted,
           tabBarStyle: {
-            backgroundColor: COLORS.navy,
-            borderTopColor: COLORS.navy,
+            backgroundColor: COLORS.surface,
+            borderTopColor: COLORS.border,
           },
           tabBarLabelStyle: {
             fontWeight: '700',
@@ -259,6 +372,9 @@ export default function App() {
                     onSendLiveMessage={handleSendLiveMessage}
                     onToggleLiveVote={handleToggleLiveVote}
                     onSessionComplete={handleSessionComplete}
+                    onChangeStudyMode={handleChangeStudyMode}
+                    onCompletePrivateHelp={handleCompletePrivateHelp}
+                    onUpdateAmbientMixer={handleUpdateAmbientMixer}
                   />
                 )}
               </RoomsStack.Screen>
@@ -301,6 +417,7 @@ export default function App() {
               joinedRoomsCount={rooms.filter((r) => r.isJoined).length}
               questionsCount={questions.length}
               onUpdateProfile={handleUpdateProfile}
+              onUnlockBadge={handleUnlockBadge}
               onResetAll={handleResetAll}
             />
           )}
