@@ -1,6 +1,6 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { CameraView, useCameraPermissions } from 'expo-camera';
+import { CameraType, CameraView, useCameraPermissions } from 'expo-camera';
 import { COLORS } from '../theme/tokens';
 import { StudyMode, StudyParticipant } from '../types/studyble';
 
@@ -52,10 +52,22 @@ export function StudyParticipantCard({
   const [permission, requestPermission] = useCameraPermissions();
   const hasAutoRequestedRef = useRef<boolean>(false);
 
+  const isCameraMode =
+    participant.studyMode === 'desk' || participant.studyMode === 'face';
+  const [cameraFacing, setCameraFacing] = useState<CameraType>(() =>
+    participant.studyMode === 'desk' ? 'back' : 'front'
+  );
+
+  useEffect(() => {
+    if (participant.studyMode === 'desk') {
+      setCameraFacing('back');
+    } else if (participant.studyMode === 'face') {
+      setCameraFacing('front');
+    }
+  }, [participant.studyMode]);
+
   const wantsLiveCamera = Boolean(
-    participant.isCurrentUser &&
-      participant.studyMode === 'face' &&
-      isScreenFocused
+    participant.isCurrentUser && isCameraMode && isScreenFocused
   );
   const canRenderLiveCamera = Boolean(wantsLiveCamera && permission?.granted);
 
@@ -77,6 +89,10 @@ export function StudyParticipantCard({
 
   const handleRequestCameraPermission = () => {
     void requestPermission().catch(() => {});
+  };
+
+  const handleFlipCamera = () => {
+    setCameraFacing((prev) => (prev === 'front' ? 'back' : 'front'));
   };
 
   const permissionBlocked = Boolean(
@@ -105,13 +121,23 @@ export function StudyParticipantCard({
       >
         {canRenderLiveCamera ? (
           <View style={styles.cameraContainer}>
-            <CameraView facing="front" style={styles.cameraPreview} />
+            <CameraView facing={cameraFacing} style={styles.cameraPreview} />
             <View style={styles.cameraOverlayTop}>
               <View style={[styles.modePill, { backgroundColor: modeMeta.pillBg }]}>
                 <Text style={[styles.modePillText, { color: modeMeta.pillText }]}>
-                  ● Live Cam
+                  {participant.studyMode === 'desk' ? '● Desk' : '● Face'}
                 </Text>
               </View>
+              <Pressable
+                style={styles.flipBtn}
+                onPress={handleFlipCamera}
+                hitSlop={6}
+                accessibilityLabel="Flip camera between front and back"
+              >
+                <Text style={styles.flipBtnText}>
+                  ⇄ {cameraFacing === 'front' ? 'Front' : 'Back'}
+                </Text>
+              </Pressable>
             </View>
           </View>
         ) : (
@@ -289,8 +315,24 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 6,
     left: 6,
+    right: 6,
     flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
+    gap: 4,
+  },
+  flipBtn: {
+    backgroundColor: 'rgba(30, 41, 59, 0.78)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 253, 249, 0.45)',
+    paddingHorizontal: 7,
+    paddingVertical: 2.5,
+    borderRadius: 999,
+  },
+  flipBtnText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.surface,
   },
   stageTopRow: {
     width: '100%',
