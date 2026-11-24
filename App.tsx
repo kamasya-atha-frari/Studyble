@@ -68,7 +68,15 @@ registerNativeAudioAdapter({
       setVolume: (vol) => {
         player.volume = vol;
       },
-      release: () => player.remove(),
+      release: () => {
+        try {
+          player.loop = false;
+          player.pause();
+          player.volume = 0;
+        } finally {
+          player.remove();
+        }
+      },
     };
   },
 });

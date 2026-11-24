@@ -11,7 +11,7 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import { useIsFocused } from '@react-navigation/native';
+import { useIsFocused, useNavigation } from '@react-navigation/native';
 import { AmbientAudioEngine } from '../audio/ambientAudioEngine';
 import { AmbientMixerBar, getAmbientSummary } from '../components/AmbientMixerBar';
 import { BreakGameModal } from '../components/BreakGameModal';
@@ -72,6 +72,7 @@ export function LiveRoomScreen({
 }: LiveRoomScreenProps) {
   const { width } = useWindowDimensions();
   const isFocused = useIsFocused();
+  const navigation = useNavigation();
   const numColumns = width >= 768 ? 4 : 2;
   const initialFocusMinutes = room?.focusMinutes ?? profile.defaultFocusMinutes;
 
@@ -96,13 +97,25 @@ export function LiveRoomScreen({
   const [secondsLeft, setSecondsLeft] = useState<number>(initialFocusMinutes * 60);
   const [isRunning, setIsRunning] = useState<boolean>(false);
 
+  // Immediately dispose on navigation blur or back-swipe removal
+  useEffect(() => {
+    const disposeNow = () => {
+      audioEngineRef.current?.dispose();
+      audioEngineRef.current = null;
+    };
+    const unsubBlur = navigation.addListener('blur', disposeNow);
+    const unsubBeforeRemove = navigation.addListener('beforeRemove', disposeNow);
+    return () => {
+      unsubBlur();
+      unsubBeforeRemove();
+    };
+  }, [navigation]);
+
   // Only run ambient audio while inside a live room and focused; dispose immediately on blur/unmount
   useEffect(() => {
     if (!room?.id || !isFocused) {
-      if (audioEngineRef.current) {
-        audioEngineRef.current.dispose();
-        audioEngineRef.current = null;
-      }
+      audioEngineRef.current?.dispose();
+      audioEngineRef.current = null;
       return;
     }
 
@@ -242,10 +255,8 @@ export function LiveRoomScreen({
   }
 
   const handleLeave = () => {
-    if (audioEngineRef.current) {
-      audioEngineRef.current.dispose();
-      audioEngineRef.current = null;
-    }
+    audioEngineRef.current?.dispose();
+    audioEngineRef.current = null;
     onLeaveRoom(room.id);
   };
 
