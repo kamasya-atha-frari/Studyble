@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import {
   FlatList,
   Pressable,
@@ -15,85 +15,26 @@ import { RoomCategory, StudyProfileState, StudyRoom } from '../types/studyble';
 interface RoomsScreenProps {
   rooms: StudyRoom[];
   profile: StudyProfileState;
-  onToggleJoinRoom: (roomId: string) => void;
-  onSessionComplete: (minutes: number) => void;
+  onEnterLiveRoom: (roomId: string) => void;
 }
 
 const CATEGORIES: Array<'All' | RoomCategory> = ['All', 'General', 'Major', 'Course', 'Interest'];
 
-export function RoomsScreen({
-  rooms,
-  profile,
-  onToggleJoinRoom,
-  onSessionComplete,
-}: RoomsScreenProps) {
+export function RoomsScreen({ rooms, profile, onEnterLiveRoom }: RoomsScreenProps) {
   const [selectedCategory, setSelectedCategory] = useState<'All' | RoomCategory>('All');
-  const [secondsLeft, setSecondsLeft] = useState<number>(profile.defaultFocusMinutes * 60);
-  const [isRunning, setIsRunning] = useState<boolean>(false);
-
-  useEffect(() => {
-    if (!isRunning) {
-      setSecondsLeft(profile.defaultFocusMinutes * 60);
-    }
-  }, [profile.defaultFocusMinutes, isRunning]);
-
-  useEffect(() => {
-    if (!isRunning) return;
-
-    const interval = setInterval(() => {
-      setSecondsLeft((prev) => {
-        if (prev <= 1) {
-          setIsRunning(false);
-          onSessionComplete(profile.defaultFocusMinutes);
-          return profile.defaultFocusMinutes * 60;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [isRunning, onSessionComplete, profile.defaultFocusMinutes]);
 
   const filteredRooms =
     selectedCategory === 'All'
       ? rooms
       : rooms.filter((room) => room.category === selectedCategory);
 
-  const mins = Math.floor(secondsLeft / 60);
-  const secs = secondsLeft % 60;
-  const formattedTimer = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.container}>
         <Text style={styles.headerTitle}>Studyble</Text>
-        <Text style={styles.headerSubtitle}>Live study rooms & focus sessions</Text>
-
-        <SectionCard style={styles.timerCard}>
-          <View style={styles.timerHeader}>
-            <Text style={styles.timerLabel}>FOCUS TIMER</Text>
-            <Text style={styles.timerMeta}>{profile.completedSessions} sessions done</Text>
-          </View>
-          <Text style={styles.timerClock}>{formattedTimer}</Text>
-          <View style={styles.timerActions}>
-            <Pressable
-              style={[styles.primaryBtn, isRunning && styles.secondaryBtn]}
-              onPress={() => setIsRunning((prev) => !prev)}
-            >
-              <Text style={styles.btnText}>{isRunning ? 'Pause' : 'Start Focus'}</Text>
-            </Pressable>
-            <Pressable
-              style={styles.outlineBtn}
-              onPress={() => {
-                setIsRunning(false);
-                onSessionComplete(profile.defaultFocusMinutes);
-                setSecondsLeft(profile.defaultFocusMinutes * 60);
-              }}
-            >
-              <Text style={styles.outlineBtnText}>Complete (+5 pts)</Text>
-            </Pressable>
-          </View>
-        </SectionCard>
+        <Text style={styles.headerSubtitle}>
+          {profile.completedSessions} sessions completed · {profile.points} pts
+        </Text>
 
         <View style={styles.filterRow}>
           {CATEGORIES.map((category) => {
@@ -119,24 +60,26 @@ export function RoomsScreen({
           ListEmptyComponent={
             <EmptyStateBox
               title="No rooms in this category"
-              subtitle="Try switching back to All to see active study rooms."
+              subtitle="Try switching back to All to see active live study rooms."
             />
           }
           renderItem={({ item }) => (
             <SectionCard style={styles.roomCard}>
               <View style={styles.roomTop}>
-                <Text style={styles.roomBadge}>{item.category}</Text>
+                <Text style={styles.roomBadge}>● LIVE · {item.category}</Text>
                 <Text style={styles.roomStudents}>{item.activeStudents} studying</Text>
               </View>
               <Text style={styles.roomTitle}>{item.title}</Text>
               <View style={styles.roomFooter}>
-                <Text style={styles.roomFocus}>{item.focusMinutes} min block</Text>
+                <Text style={styles.roomFocus}>
+                  {item.focusMinutes} min block · {item.messages.length} live posts
+                </Text>
                 <Pressable
                   style={[styles.joinBtn, item.isJoined && styles.joinedBtn]}
-                  onPress={() => onToggleJoinRoom(item.id)}
+                  onPress={() => onEnterLiveRoom(item.id)}
                 >
                   <Text style={styles.joinBtnText}>
-                    {item.isJoined ? 'Joined' : 'Join Room'}
+                    {item.isJoined ? 'Enter Live →' : 'Join Live'}
                   </Text>
                 </Pressable>
               </View>
@@ -167,64 +110,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: COLORS.textMuted,
     marginBottom: 12,
-  },
-  timerCard: {
-    backgroundColor: COLORS.navy,
-    borderColor: COLORS.navy,
-    marginBottom: 12,
-  },
-  timerHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  timerLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: COLORS.coral,
-    letterSpacing: 0.8,
-  },
-  timerMeta: {
-    fontSize: 12,
-    color: COLORS.cream,
-  },
-  timerClock: {
-    fontSize: 38,
-    fontWeight: '800',
-    color: COLORS.surface,
-    marginVertical: 8,
-  },
-  timerActions: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  primaryBtn: {
-    flex: 1,
-    backgroundColor: COLORS.coral,
-    paddingVertical: 11,
-    borderRadius: 10,
-    alignItems: 'center',
-  },
-  secondaryBtn: {
-    backgroundColor: '#3A4A6B',
-  },
-  btnText: {
-    color: COLORS.surface,
-    fontWeight: '700',
-    fontSize: 14,
-  },
-  outlineBtn: {
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: COLORS.cream,
-    justifyContent: 'center',
-  },
-  outlineBtnText: {
-    color: COLORS.cream,
-    fontWeight: '600',
-    fontSize: 13,
   },
   filterRow: {
     flexDirection: 'row',
@@ -285,11 +170,11 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   roomFocus: {
-    fontSize: 13,
+    fontSize: 12,
     color: COLORS.textMuted,
   },
   joinBtn: {
-    backgroundColor: COLORS.navy,
+    backgroundColor: COLORS.coral,
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 8,

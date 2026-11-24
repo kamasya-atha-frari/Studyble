@@ -2,9 +2,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { QuestionItem, StudyProfileState, StudyRoom } from '../types/studyble';
 
 const KEYS = {
-  ROOMS: '@studyble_rooms_v1',
-  QUESTIONS: '@studyble_questions_v1',
-  PROFILE: '@studyble_profile_v1',
+  ROOMS: '@studyble_rooms_v2',
+  QUESTIONS: '@studyble_questions_v2',
+  PROFILE: '@studyble_profile_v2',
 };
 
 export const INITIAL_ROOMS: StudyRoom[] = [
@@ -15,6 +15,26 @@ export const INITIAL_ROOMS: StudyRoom[] = [
     activeStudents: 14,
     focusMinutes: 25,
     isJoined: false,
+    messages: [
+      {
+        id: 'm-1',
+        sender: 'Nadia',
+        text: 'Apakah kompleksitas waktu binary search selalu O(log n) di worst case?',
+        isQuestion: true,
+        votes: 5,
+        hasVoted: false,
+        createdAt: '2m ago',
+      },
+      {
+        id: 'm-2',
+        sender: 'Raka',
+        text: 'Sesi 25 menit pertama dimulai, semangat semuanya!',
+        isQuestion: false,
+        votes: 2,
+        hasVoted: false,
+        createdAt: '1m ago',
+      },
+    ],
   },
   {
     id: 'room-2',
@@ -22,7 +42,18 @@ export const INITIAL_ROOMS: StudyRoom[] = [
     category: 'General',
     activeStudents: 22,
     focusMinutes: 50,
-    isJoined: true,
+    isJoined: false,
+    messages: [
+      {
+        id: 'm-3',
+        sender: 'Tari',
+        text: 'Ada tips ringkas bedain definisi dan teorema saat hafalan?',
+        isQuestion: true,
+        votes: 4,
+        hasVoted: false,
+        createdAt: '4m ago',
+      },
+    ],
   },
   {
     id: 'room-3',
@@ -31,6 +62,17 @@ export const INITIAL_ROOMS: StudyRoom[] = [
     activeStudents: 9,
     focusMinutes: 25,
     isJoined: false,
+    messages: [
+      {
+        id: 'm-4',
+        sender: 'Bima',
+        text: 'Kenapa state di React Native sebaiknya immutable saat di-update?',
+        isQuestion: true,
+        votes: 3,
+        hasVoted: false,
+        createdAt: '3m ago',
+      },
+    ],
   },
 ];
 

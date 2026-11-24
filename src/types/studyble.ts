@@ -1,5 +1,15 @@
 export type RoomCategory = 'General' | 'Major' | 'Course' | 'Interest';
 
+export interface LiveMessageItem {
+  id: string;
+  sender: string;
+  text: string;
+  isQuestion: boolean;
+  votes: number;
+  hasVoted: boolean;
+  createdAt: string;
+}
+
 export interface StudyRoom {
   id: string;
   title: string;
@@ -7,6 +17,7 @@ export interface StudyRoom {
   activeStudents: number;
   focusMinutes: number;
   isJoined: boolean;
+  messages: LiveMessageItem[];
 }
 
 export interface AnswerItem {

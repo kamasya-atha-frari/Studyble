@@ -3,6 +3,7 @@ import { ActivityIndicator, SafeAreaView, StyleSheet, Text } from 'react-native'
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { LiveRoomScreen } from './src/screens/LiveRoomScreen';
 import { ProfileScreen } from './src/screens/ProfileScreen';
 import { QnAScreen } from './src/screens/QnAScreen';
 import { QuestionDetailScreen } from './src/screens/QuestionDetailScreen';
@@ -26,12 +27,18 @@ type RootTabParamList = {
   ProfileTab: undefined;
 };
 
+type RoomsStackParamList = {
+  RoomsList: undefined;
+  LiveRoom: { roomId: string };
+};
+
 type QnAStackParamList = {
   QnAList: undefined;
   QuestionDetail: { questionId: string };
 };
 
 const Tab = createBottomTabNavigator<RootTabParamList>();
+const RoomsStack = createNativeStackNavigator<RoomsStackParamList>();
 const QnAStack = createNativeStackNavigator<QnAStackParamList>();
 
 export default function App() {
@@ -50,14 +57,69 @@ export default function App() {
     })();
   }, []);
 
-  const handleToggleJoinRoom = (roomId: string) => {
+  const handleEnterLiveRoom = (roomId: string) => {
     const updated = rooms.map((room) => {
-      if (room.id !== roomId) return room;
-      const nextJoined = !room.isJoined;
+      if (room.id !== roomId || room.isJoined) return room;
       return {
         ...room,
-        isJoined: nextJoined,
-        activeStudents: Math.max(0, room.activeStudents + (nextJoined ? 1 : -1)),
+        isJoined: true,
+        activeStudents: room.activeStudents + 1,
+      };
+    });
+    setRooms(updated);
+    saveRooms(updated);
+  };
+
+  const handleLeaveRoom = (roomId: string) => {
+    const updated = rooms.map((room) => {
+      if (room.id !== roomId || !room.isJoined) return room;
+      return {
+        ...room,
+        isJoined: false,
+        activeStudents: Math.max(0, room.activeStudents - 1),
+      };
+    });
+    setRooms(updated);
+    saveRooms(updated);
+  };
+
+  const handleSendLiveMessage = (roomId: string, text: string, isQuestion: boolean) => {
+    const updated = rooms.map((room) => {
+      if (room.id !== roomId) return room;
+      return {
+        ...room,
+        messages: [
+          {
+            id: `m-${Date.now()}`,
+            sender: profile.studentName,
+            text,
+            isQuestion,
+            votes: isQuestion ? 1 : 0,
+            hasVoted: isQuestion,
+            createdAt: 'Just now',
+          },
+          ...room.messages,
+        ],
+      };
+    });
+    setRooms(updated);
+    saveRooms(updated);
+  };
+
+  const handleToggleLiveVote = (roomId: string, messageId: string) => {
+    const updated = rooms.map((room) => {
+      if (room.id !== roomId) return room;
+      return {
+        ...room,
+        messages: room.messages.map((msg) => {
+          if (msg.id !== messageId) return msg;
+          const nextVoted = !msg.hasVoted;
+          return {
+            ...msg,
+            hasVoted: nextVoted,
+            votes: Math.max(0, msg.votes + (nextVoted ? 1 : -1)),
+          };
+        }),
       };
     });
     setRooms(updated);
@@ -172,12 +234,35 @@ export default function App() {
       >
         <Tab.Screen name="RoomsTab" options={{ title: 'Study Rooms' }}>
           {() => (
-            <RoomsScreen
-              rooms={rooms}
-              profile={profile}
-              onToggleJoinRoom={handleToggleJoinRoom}
-              onSessionComplete={handleSessionComplete}
-            />
+            <RoomsStack.Navigator screenOptions={{ headerShown: false }}>
+              <RoomsStack.Screen name="RoomsList">
+                {({ navigation }) => (
+                  <RoomsScreen
+                    rooms={rooms}
+                    profile={profile}
+                    onEnterLiveRoom={(roomId) => {
+                      handleEnterLiveRoom(roomId);
+                      navigation.navigate('LiveRoom', { roomId });
+                    }}
+                  />
+                )}
+              </RoomsStack.Screen>
+              <RoomsStack.Screen name="LiveRoom">
+                {({ navigation, route }) => (
+                  <LiveRoomScreen
+                    room={rooms.find((r) => r.id === route.params.roomId)}
+                    profile={profile}
+                    onLeaveRoom={(roomId) => {
+                      handleLeaveRoom(roomId);
+                      navigation.goBack();
+                    }}
+                    onSendLiveMessage={handleSendLiveMessage}
+                    onToggleLiveVote={handleToggleLiveVote}
+                    onSessionComplete={handleSessionComplete}
+                  />
+                )}
+              </RoomsStack.Screen>
+            </RoomsStack.Navigator>
           )}
         </Tab.Screen>
 
