@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   FlatList,
   KeyboardAvoidingView,
@@ -11,6 +11,8 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
+import { useIsFocused } from '@react-navigation/native';
+import { AmbientAudioEngine } from '../audio/ambientAudioEngine';
 import { AmbientMixerBar, getAmbientSummary } from '../components/AmbientMixerBar';
 import { BreakGameModal } from '../components/BreakGameModal';
 import { EmptyStateBox } from '../components/EmptyStateBox';
@@ -69,8 +71,15 @@ export function LiveRoomScreen({
   onUpdateAmbientMixer,
 }: LiveRoomScreenProps) {
   const { width } = useWindowDimensions();
+  const isFocused = useIsFocused();
   const numColumns = width >= 768 ? 4 : 2;
   const initialFocusMinutes = room?.focusMinutes ?? profile.defaultFocusMinutes;
+
+  const audioEngineRef = useRef<AmbientAudioEngine | null>(null);
+  const ambientMixerRef = useRef<AmbientMixerState>(profile.ambientMixer);
+  useEffect(() => {
+    ambientMixerRef.current = profile.ambientMixer;
+  }, [profile.ambientMixer]);
 
   const [activeView, setActiveView] = useState<LiveViewTab>('grid');
   const [emptyRoomDemo, setEmptyRoomDemo] = useState<boolean>(false);
@@ -86,6 +95,34 @@ export function LiveRoomScreen({
   const [sessionNotice, setSessionNotice] = useState<string>('');
   const [secondsLeft, setSecondsLeft] = useState<number>(initialFocusMinutes * 60);
   const [isRunning, setIsRunning] = useState<boolean>(false);
+
+  // Only run ambient audio while inside a live room and focused; dispose immediately on blur/unmount
+  useEffect(() => {
+    if (!room?.id || !isFocused) {
+      if (audioEngineRef.current) {
+        audioEngineRef.current.dispose();
+        audioEngineRef.current = null;
+      }
+      return;
+    }
+
+    const engine = new AmbientAudioEngine();
+    audioEngineRef.current = engine;
+    engine.syncMixer(ambientMixerRef.current);
+
+    return () => {
+      engine.dispose();
+      if (audioEngineRef.current === engine) {
+        audioEngineRef.current = null;
+      }
+    };
+  }, [isFocused, room?.id]);
+
+  // Sync live mixer volume/toggle updates while focused inside the room
+  useEffect(() => {
+    if (!room?.id || !isFocused || !audioEngineRef.current) return;
+    audioEngineRef.current.syncMixer(profile.ambientMixer);
+  }, [profile.ambientMixer, isFocused, room?.id]);
 
   useEffect(() => {
     setSecondsLeft(initialFocusMinutes * 60);
@@ -204,6 +241,14 @@ export function LiveRoomScreen({
     );
   }
 
+  const handleLeave = () => {
+    if (audioEngineRef.current) {
+      audioEngineRef.current.dispose();
+      audioEngineRef.current = null;
+    }
+    onLeaveRoom(room.id);
+  };
+
   const handleCycleStudyMode = () => {
     const idx = MODE_ORDER.indexOf(profile.studyMode);
     const nextMode = MODE_ORDER[(idx + 1) % MODE_ORDER.length];
@@ -309,7 +354,7 @@ export function LiveRoomScreen({
           <View style={styles.topBar}>
             <Pressable
               style={styles.leaveBtn}
-              onPress={() => onLeaveRoom(room.id)}
+              onPress={handleLeave}
             >
               <Text style={styles.leaveBtnText}>← Leave Live</Text>
             </Pressable>

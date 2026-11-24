@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, SafeAreaView, StyleSheet, Text } from 'react-native';
+import { createAudioPlayer, setAudioModeAsync } from 'expo-audio';
 import { StatusBar } from 'expo-status-bar';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { registerNativeAudioAdapter } from './src/audio/ambientAudioEngine';
 import { LiveRoomScreen } from './src/screens/LiveRoomScreen';
 import { ProfileScreen } from './src/screens/ProfileScreen';
 import { QnAScreen } from './src/screens/QnAScreen';
@@ -55,6 +57,22 @@ const Tab = createBottomTabNavigator<RootTabParamList>();
 const RoomsStack = createNativeStackNavigator<RoomsStackParamList>();
 const QnAStack = createNativeStackNavigator<QnAStackParamList>();
 
+registerNativeAudioAdapter({
+  async createLoopingPlayer(source, initialVolume) {
+    const player = createAudioPlayer(source);
+    player.loop = true;
+    player.volume = initialVolume;
+    return {
+      play: () => player.play(),
+      pause: () => player.pause(),
+      setVolume: (vol) => {
+        player.volume = vol;
+      },
+      release: () => player.remove(),
+    };
+  },
+});
+
 export default function App() {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [rooms, setRooms] = useState<StudyRoom[]>(INITIAL_ROOMS);
@@ -65,6 +83,13 @@ export default function App() {
   useEffect(() => {
     profileRef.current = profile;
   }, [profile]);
+
+  useEffect(() => {
+    void setAudioModeAsync({
+      playsInSilentMode: true,
+      interruptionMode: 'mixWithOthers',
+    }).catch(() => {});
+  }, []);
 
   useEffect(() => {
     let active = true;
