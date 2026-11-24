@@ -21,7 +21,7 @@
 - **Co-Working Extras (`StudyReceiptModal`, `BreakGameModal`, `AmbientMixerBar`)**:
   - **Study Receipt Modal**: Thermal-paper style summary card showing student name, major/jurusan, completed focus minutes, current study goal, role & level, total points, and earned `"Pro At"` badges, with a **Share Receipt** button using the React Native `Share` API.
   - **Take a Break Mini-Game**: 6-pair (12-card) study-themed memory match modal triggered from **Take a Break** without resetting your active room or running timer.
-  - **Ambient Sound Mixer**: Clean 4-channel stateful control bar (`Rain`, `Keyboard`, `Paper`, `Cafe`) with ON/OFF toggles, stepped intensity levels, quick presets, live status feedback, and automatic `AsyncStorage` persistence with zero missing-asset risks.
+  - **Ambient Sound Mixer**: Clean 4-channel control bar (`Rain`, `Keyboard`, `Paper`, `Cafe`) with ON/OFF toggles, draggable volume sliders (`0–100%`), quick presets, automatic `AsyncStorage` persistence, live Web Audio API procedural looping playback out of the box, procedural WAV fallback + pluggable `expo-audio`/`expo-av` native adapter, full unmount cleanup, and an `assets/sounds/README.md` setup guide for custom MP3 loops.
 - **Level Progression, “Pro At” Quiz & Private Chat Anti-Farming (`ProfileScreen`, `ProQuizModal`, `PrivateChatModal`)**:
   - **Progression Formula**: Every `10` points = `+1` Level (`0–9 pts: Pelajar`, `10–100 pts: Helper`, `110+ pts: Pro Helper`).
   - **“Pro At” Certification Mini-Quiz**: Score `>= 4/5` in Statistics or Math to unlock specialist badges displayed on your profile, participant card, and Study Receipt.
@@ -34,7 +34,14 @@
 ```text
 Studyble/
 ├── App.tsx                                # Root navigation & state orchestration
+├── assets/
+│   └── sounds/
+│       └── README.md                      # Setup guide for rain.mp3, keyboard.mp3, paper.mp3, cafe.mp3
 ├── src/
+│   ├── audio/
+│   │   ├── ambientSources.ts              # Local MP3 asset registry (safe null defaults)
+│   │   ├── proceduralWav.ts               # Pure-TS looping PCM WAV fallback URI generator
+│   │   └── ambientAudioEngine.ts          # Cross-platform Web Audio + native Expo audio engine
 │   ├── types/studyble.ts                  # Core TypeScript domain models
 │   ├── utils/progression.ts               # Level/rank formula, sorting & 24h cooldown helpers
 │   ├── storage/storage.ts                 # AsyncStorage persistence, seed data & companion bots

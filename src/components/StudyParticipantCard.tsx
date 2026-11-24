@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { CameraType, CameraView, useCameraPermissions } from 'expo-camera';
 import { COLORS } from '../theme/tokens';
 import { StudyMode, StudyParticipant } from '../types/studyble';
@@ -10,7 +10,7 @@ interface StudyParticipantCardProps {
   isTopContributor?: boolean;
   isOnCooldown?: boolean;
   onAskPrivateChat?: (participant: StudyParticipant) => void;
-  onCycleStudyMode?: () => void;
+  onSelectStudyMode?: (mode: StudyMode) => void;
 }
 
 const STUDY_MODE_META: Record<
@@ -46,31 +46,44 @@ export function StudyParticipantCard({
   isTopContributor = false,
   isOnCooldown = false,
   onAskPrivateChat,
-  onCycleStudyMode,
+  onSelectStudyMode,
 }: StudyParticipantCardProps) {
   const modeMeta = STUDY_MODE_META[participant.studyMode];
   const [permission, requestPermission] = useCameraPermissions();
   const hasAutoRequestedRef = useRef<boolean>(false);
 
-  const isCameraMode =
-    participant.studyMode === 'desk' || participant.studyMode === 'face';
-  const [cameraFacing, setCameraFacing] = useState<CameraType>(() =>
-    participant.studyMode === 'desk' ? 'back' : 'front'
-  );
+  const [deskFacing, setDeskFacing] = useState<CameraType>('back');
+  const [faceConfirmed, setFaceConfirmed] = useState<boolean>(false);
+  const [facePromptVisible, setFacePromptVisible] = useState<boolean>(false);
 
+  const isDeskActive = participant.studyMode === 'desk';
+  const isFaceActive = participant.studyMode === 'face' && faceConfirmed;
+  const isCameraOn = isDeskActive || isFaceActive;
+
+  // Reset desk lens default to back on desk entry; clear face confirmation whenever leaving face or blurring
   useEffect(() => {
     if (participant.studyMode === 'desk') {
-      setCameraFacing('back');
-    } else if (participant.studyMode === 'face') {
-      setCameraFacing('front');
+      setDeskFacing('back');
+      setFaceConfirmed(false);
+    } else if (participant.studyMode === 'avatar') {
+      setFaceConfirmed(false);
+      setFacePromptVisible(false);
     }
   }, [participant.studyMode]);
 
+  useEffect(() => {
+    if (!isScreenFocused) {
+      setFaceConfirmed(false);
+      setFacePromptVisible(false);
+    }
+  }, [isScreenFocused]);
+
   const wantsLiveCamera = Boolean(
-    participant.isCurrentUser && isCameraMode && isScreenFocused
+    participant.isCurrentUser && isCameraOn && isScreenFocused
   );
   const canRenderLiveCamera = Boolean(wantsLiveCamera && permission?.granted);
 
+  // Request camera permission only once the user has actively enabled Desk or confirmed Face mode
   useEffect(() => {
     if (!wantsLiveCamera) {
       hasAutoRequestedRef.current = false;
@@ -87,12 +100,62 @@ export function StudyParticipantCard({
     }
   }, [wantsLiveCamera, permission, requestPermission]);
 
-  const handleRequestCameraPermission = () => {
-    void requestPermission().catch(() => {});
+  const requestCameraPermissionIfNeeded = () => {
+    if (!permission?.granted && (permission === null || permission.canAskAgain)) {
+      hasAutoRequestedRef.current = true;
+      void requestPermission().catch(() => {});
+    }
   };
 
-  const handleFlipCamera = () => {
-    setCameraFacing((prev) => (prev === 'front' ? 'back' : 'front'));
+  const handleToggleCamera = () => {
+    if (!onSelectStudyMode) return;
+    if (isCameraOn) {
+      setFaceConfirmed(false);
+      setFacePromptVisible(false);
+      onSelectStudyMode('avatar');
+      return;
+    }
+
+    // Turning camera ON defaults safely to Desk (rear camera) so Face never opens unexpectedly
+    setDeskFacing('back');
+    requestCameraPermissionIfNeeded();
+    onSelectStudyMode('desk');
+  };
+
+  const handleSelectDeskMode = () => {
+    if (!onSelectStudyMode) return;
+    setFaceConfirmed(false);
+    setFacePromptVisible(false);
+    setDeskFacing('back');
+    requestCameraPermissionIfNeeded();
+    onSelectStudyMode('desk');
+  };
+
+  const handleRequestFaceMode = () => {
+    if (!onSelectStudyMode) return;
+    if (isFaceActive) return;
+    // Always show heads-up confirmation gate before activating front camera
+    setFacePromptVisible(true);
+  };
+
+  const handleCancelFacePrompt = () => {
+    setFacePromptVisible(false);
+  };
+
+  const handleConfirmFaceCamera = () => {
+    if (!onSelectStudyMode) return;
+    setFacePromptVisible(false);
+    setFaceConfirmed(true);
+    requestCameraPermissionIfNeeded();
+    onSelectStudyMode('face');
+  };
+
+  const handleFlipDeskCamera = () => {
+    setDeskFacing((prev) => (prev === 'back' ? 'front' : 'back'));
+  };
+
+  const handleRequestCameraPermission = () => {
+    void requestPermission().catch(() => {});
   };
 
   const permissionBlocked = Boolean(
@@ -101,6 +164,8 @@ export function StudyParticipantCard({
       !permission.granted &&
       permission.canAskAgain === false
   );
+
+  const activeCameraFacing: CameraType = isFaceActive ? 'front' : deskFacing;
 
   return (
     <View
@@ -121,23 +186,30 @@ export function StudyParticipantCard({
       >
         {canRenderLiveCamera ? (
           <View style={styles.cameraContainer}>
-            <CameraView facing={cameraFacing} style={styles.cameraPreview} />
+            <CameraView
+              facing={activeCameraFacing}
+              style={styles.cameraPreview}
+            />
             <View style={styles.cameraOverlayTop}>
               <View style={[styles.modePill, { backgroundColor: modeMeta.pillBg }]}>
                 <Text style={[styles.modePillText, { color: modeMeta.pillText }]}>
-                  {participant.studyMode === 'desk' ? '● Desk' : '● Face'}
+                  {isFaceActive ? '● Face' : '● Desk'}
                 </Text>
               </View>
-              <Pressable
-                style={styles.flipBtn}
-                onPress={handleFlipCamera}
-                hitSlop={6}
-                accessibilityLabel="Flip camera between front and back"
-              >
-                <Text style={styles.flipBtnText}>
-                  ⇄ {cameraFacing === 'front' ? 'Front' : 'Back'}
-                </Text>
-              </Pressable>
+
+              {/* Flip Front/Back is available in Desk mode only; Face stays strictly Front */}
+              {isDeskActive ? (
+                <Pressable
+                  style={styles.flipBtn}
+                  onPress={handleFlipDeskCamera}
+                  hitSlop={6}
+                  accessibilityLabel="Flip desk camera between front and back"
+                >
+                  <Text style={styles.flipBtnText}>
+                    ⇄ {deskFacing === 'back' ? 'Back' : 'Front'}
+                  </Text>
+                </Pressable>
+              ) : null}
             </View>
           </View>
         ) : (
@@ -186,10 +258,16 @@ export function StudyParticipantCard({
             ) : participant.studyMode === 'desk' ? (
               <Text style={styles.stageSubLabel}>Desk lamp on</Text>
             ) : participant.studyMode === 'face' ? (
-              <Text style={styles.stageSubLabel}>Cam focus active</Text>
+              <Text style={styles.stageSubLabel}>
+                {participant.isCurrentUser ? 'Camera off' : 'Cam focus active'}
+              </Text>
             ) : (
               <Text style={styles.stageSubLabel}>
-                {participant.isBot ? 'Companion bot' : 'Calm avatar'}
+                {participant.isBot
+                  ? 'Companion bot'
+                  : participant.isCurrentUser
+                  ? 'Camera off'
+                  : 'Calm avatar'}
               </Text>
             )}
           </>
@@ -233,10 +311,59 @@ export function StudyParticipantCard({
       </View>
 
       {/* Card Action Footer */}
-      {participant.isCurrentUser && onCycleStudyMode ? (
-        <Pressable style={styles.modeSwitchBtn} onPress={onCycleStudyMode}>
-          <Text style={styles.modeSwitchText}>Switch Mode ↻</Text>
-        </Pressable>
+      {participant.isCurrentUser && onSelectStudyMode ? (
+        <View style={styles.cameraControlsWrap}>
+          <Pressable
+            style={[styles.camToggleBtn, isCameraOn && styles.camToggleBtnOn]}
+            onPress={handleToggleCamera}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: isCameraOn }}
+          >
+            <Text
+              style={[
+                styles.camToggleText,
+                isCameraOn && styles.camToggleTextOn,
+              ]}
+            >
+              {isCameraOn ? '📷 Cam On · Turn Off' : '📷 Cam Off · Turn On'}
+            </Text>
+          </Pressable>
+
+          <View style={styles.camModeRow}>
+            <Pressable
+              style={[
+                styles.camModePill,
+                isDeskActive && styles.camModePillActive,
+              ]}
+              onPress={handleSelectDeskMode}
+            >
+              <Text
+                style={[
+                  styles.camModePillText,
+                  isDeskActive && styles.camModePillTextActive,
+                ]}
+              >
+                Desk
+              </Text>
+            </Pressable>
+            <Pressable
+              style={[
+                styles.camModePill,
+                isFaceActive && styles.camModePillActive,
+              ]}
+              onPress={handleRequestFaceMode}
+            >
+              <Text
+                style={[
+                  styles.camModePillText,
+                  isFaceActive && styles.camModePillTextActive,
+                ]}
+              >
+                Face
+              </Text>
+            </Pressable>
+          </View>
+        </View>
       ) : participant.privateChatEnabled && !participant.isBot && onAskPrivateChat ? (
         <Pressable
           style={[styles.askBtn, isOnCooldown && styles.askBtnCooldown]}
@@ -259,6 +386,41 @@ export function StudyParticipantCard({
           </Text>
         </View>
       )}
+
+      {/* Privacy Confirmation Gate Modal before opening Front Camera ('face') */}
+      {participant.isCurrentUser ? (
+        <Modal
+          visible={facePromptVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={handleCancelFacePrompt}
+        >
+          <View style={styles.modalBackdrop}>
+            <View style={styles.modalCard}>
+              <Text style={styles.modalEyebrow}>FRONT CAMERA HEADS-UP</Text>
+              <Text style={styles.modalTitle}>Ready to show your face?</Text>
+              <Text style={styles.modalBody}>
+                Turning on Face mode activates your front-facing camera in the live study room. Take a moment to get ready—for example, put on your hijab or adjust your desk—before continuing.
+              </Text>
+
+              <View style={styles.modalActions}>
+                <Pressable
+                  style={styles.modalCancelBtn}
+                  onPress={handleCancelFacePrompt}
+                >
+                  <Text style={styles.modalCancelText}>Cancel</Text>
+                </Pressable>
+                <Pressable
+                  style={styles.modalConfirmBtn}
+                  onPress={handleConfirmFaceCamera}
+                >
+                  <Text style={styles.modalConfirmText}>Turn On Front Cam</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </Modal>
+      ) : null}
     </View>
   );
 }
@@ -456,6 +618,55 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
     lineHeight: 15,
   },
+  cameraControlsWrap: {
+    gap: 6,
+  },
+  camToggleBtn: {
+    backgroundColor: COLORS.surfaceSoft,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  camToggleBtnOn: {
+    backgroundColor: COLORS.sage,
+    borderColor: COLORS.sage,
+  },
+  camToggleText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.navy,
+  },
+  camToggleTextOn: {
+    color: COLORS.surface,
+  },
+  camModeRow: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  camModePill: {
+    flex: 1,
+    paddingVertical: 4,
+    borderRadius: 7,
+    backgroundColor: COLORS.surfaceSoft,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    alignItems: 'center',
+  },
+  camModePillActive: {
+    backgroundColor: COLORS.navy,
+    borderColor: COLORS.navy,
+  },
+  camModePillText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.textMuted,
+  },
+  camModePillTextActive: {
+    color: COLORS.surface,
+  },
   askBtn: {
     backgroundColor: COLORS.coral,
     paddingVertical: 7,
@@ -476,20 +687,6 @@ const styles = StyleSheet.create({
   askBtnCooldownText: {
     color: COLORS.textMuted,
   },
-  modeSwitchBtn: {
-    backgroundColor: COLORS.sageSoft,
-    borderWidth: 1,
-    borderColor: COLORS.sage,
-    paddingVertical: 6,
-    paddingHorizontal: 8,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  modeSwitchText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: COLORS.sage,
-  },
   quietFooter: {
     paddingVertical: 6,
     alignItems: 'center',
@@ -500,5 +697,65 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '600',
     color: COLORS.textMuted,
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(30, 41, 59, 0.55)',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  modalCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    padding: 18,
+    gap: 10,
+  },
+  modalEyebrow: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.9,
+    color: COLORS.coral,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: COLORS.navy,
+  },
+  modalBody: {
+    fontSize: 13,
+    color: COLORS.textPrimary,
+    lineHeight: 19,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+    marginTop: 6,
+  },
+  modalCancelBtn: {
+    backgroundColor: COLORS.surfaceSoft,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 10,
+  },
+  modalCancelText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.navy,
+  },
+  modalConfirmBtn: {
+    backgroundColor: COLORS.sage,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    borderRadius: 10,
+  },
+  modalConfirmText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.surface,
   },
 });

@@ -1,5 +1,14 @@
-import React from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  GestureResponderEvent,
+  LayoutChangeEvent,
+  PanResponder,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
+import { getAudioEngineStatus } from '../audio/ambientAudioEngine';
 import { COLORS } from '../theme/tokens';
 import { AmbientChannelKey, AmbientMixerState } from '../types/studyble';
 
@@ -21,14 +30,93 @@ const CHANNELS: ReadonlyArray<{
   { key: 'cafe', label: 'Cafe', icon: '☕' },
 ];
 
-const LEVEL_STEPS = [25, 50, 75, 100] as const;
-
 export function getAmbientSummary(mixer: AmbientMixerState): string {
-  const activeLabels = CHANNELS.filter((ch) => mixer[ch.key].active && mixer[ch.key].level > 0)
-    .map((ch) => `${ch.label} ${mixer[ch.key].level}%`);
+  const activeLabels = CHANNELS.filter(
+    (ch) => mixer[ch.key].active && mixer[ch.key].level > 0
+  ).map((ch) => `${ch.label} ${mixer[ch.key].level}%`);
 
   if (activeLabels.length === 0) return 'Off';
   return activeLabels.join(' · ');
+}
+
+interface VolumeSliderProps {
+  value: number;
+  active: boolean;
+  onValueChange: (next: number) => void;
+}
+
+function VolumeSlider({ value, active, onValueChange }: VolumeSliderProps) {
+  const [trackWidth, setTrackWidth] = useState<number>(0);
+  const trackWidthRef = useRef<number>(0);
+  const startValueRef = useRef<number>(value);
+  const onChangeRef = useRef(onValueChange);
+
+  useEffect(() => {
+    onChangeRef.current = onValueChange;
+  }, [onValueChange]);
+
+  const computeFromLocationX = (locationX: number) => {
+    const width = trackWidthRef.current;
+    if (width <= 0) return value;
+    const ratio = Math.max(0, Math.min(1, locationX / width));
+    return Math.round((ratio * 100) / 5) * 5;
+  };
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderGrant: (evt: GestureResponderEvent) => {
+          const next = computeFromLocationX(evt.nativeEvent.locationX);
+          startValueRef.current = next;
+          onChangeRef.current(next);
+        },
+        onPanResponderMove: (_evt, gestureState) => {
+          const width = trackWidthRef.current;
+          if (width <= 0) return;
+          const deltaPercent = (gestureState.dx / width) * 100;
+          const raw = Math.max(0, Math.min(100, startValueRef.current + deltaPercent));
+          const snapped = Math.round(raw / 5) * 5;
+          onChangeRef.current(snapped);
+        },
+      }),
+    []
+  );
+
+  const handleLayout = (e: LayoutChangeEvent) => {
+    const w = e.nativeEvent.layout.width;
+    trackWidthRef.current = w;
+    setTrackWidth(w);
+  };
+
+  const visualPercent = active ? Math.max(0, Math.min(100, value)) : 0;
+  const thumbOffset =
+    trackWidth > 0 ? Math.max(0, Math.min(trackWidth - 16, (visualPercent / 100) * (trackWidth - 16))) : 0;
+
+  return (
+    <View
+      style={styles.sliderTouchArea}
+      onLayout={handleLayout}
+      {...panResponder.panHandlers}
+    >
+      <View style={styles.sliderTrack}>
+        <View
+          style={[
+            styles.sliderFill,
+            { width: `${visualPercent}%` },
+          ]}
+        />
+      </View>
+      <View
+        style={[
+          styles.sliderThumb,
+          active && visualPercent > 0 && styles.sliderThumbActive,
+          { left: thumbOffset },
+        ]}
+      />
+    </View>
+  );
 }
 
 export function AmbientMixerBar({
@@ -39,6 +127,7 @@ export function AmbientMixerBar({
 }: AmbientMixerBarProps) {
   const activeSummary = getAmbientSummary(mixer);
   const hasActive = activeSummary !== 'Off';
+  const engineStatus = useMemo(() => getAudioEngineStatus(mixer), [mixer]);
 
   const handleToggleChannel = (key: AmbientChannelKey) => {
     const current = mixer[key];
@@ -51,7 +140,7 @@ export function AmbientMixerBar({
   };
 
   const handleSetLevel = (key: AmbientChannelKey, nextLevel: number) => {
-    const clamped = Math.max(0, Math.min(100, nextLevel));
+    const clamped = Math.max(0, Math.min(100, Math.round(nextLevel)));
     onChange({
       ...mixer,
       [key]: {
@@ -74,7 +163,7 @@ export function AmbientMixerBar({
 
     if (preset === 'rainy-cafe') {
       onChange({
-        rain: { active: true, level: 50 },
+        rain: { active: true, level: 55 },
         keyboard: { active: false, level: 25 },
         paper: { active: false, level: 25 },
         cafe: { active: true, level: 50 },
@@ -84,8 +173,8 @@ export function AmbientMixerBar({
 
     onChange({
       rain: { active: true, level: 25 },
-      keyboard: { active: true, level: 75 },
-      paper: { active: true, level: 50 },
+      keyboard: { active: true, level: 70 },
+      paper: { active: true, level: 45 },
       cafe: { active: false, level: 25 },
     });
   };
@@ -98,14 +187,19 @@ export function AmbientMixerBar({
         <View style={styles.headerTextWrap}>
           <Text style={styles.title}>Ambient Sound Mixer</Text>
           <Text style={styles.statusLine} numberOfLines={1}>
-            {hasActive
-              ? `Playing mix: ${activeSummary}`
-              : 'All 4 ambient channels paused · Saved to device'}
+            {hasActive ? `Active: ${activeSummary}` : 'All 4 channels muted'}
           </Text>
         </View>
         <Pressable style={styles.collapseBtn} onPress={onToggleExpand}>
           <Text style={styles.collapseBtnText}>Hide</Text>
         </Pressable>
+      </View>
+
+      <View style={styles.engineNoteBox}>
+        <Text style={styles.engineNoteText}>
+          {hasActive ? '● ' : '○ '}
+          {engineStatus.note}
+        </Text>
       </View>
 
       <View style={styles.presetRow}>
@@ -132,19 +226,20 @@ export function AmbientMixerBar({
       <View style={styles.channelList}>
         {CHANNELS.map((ch) => {
           const state = mixer[ch.key];
+          const isPlaying = state.active && state.level > 0;
           return (
             <View key={ch.key} style={styles.channelRow}>
               <Pressable
                 style={[
                   styles.channelToggle,
-                  state.active && styles.channelToggleActive,
+                  isPlaying && styles.channelToggleActive,
                 ]}
                 onPress={() => handleToggleChannel(ch.key)}
               >
                 <Text
                   style={[
                     styles.channelToggleText,
-                    state.active && styles.channelToggleTextActive,
+                    isPlaying && styles.channelToggleTextActive,
                   ]}
                   numberOfLines={1}
                 >
@@ -155,36 +250,31 @@ export function AmbientMixerBar({
               <View style={styles.levelControls}>
                 <Pressable
                   style={styles.stepBtn}
-                  onPress={() => handleSetLevel(ch.key, state.level - 25)}
+                  onPress={() => handleSetLevel(ch.key, state.level - 15)}
                 >
                   <Text style={styles.stepBtnText}>−</Text>
                 </Pressable>
 
-                <View style={styles.barsRow}>
-                  {LEVEL_STEPS.map((step) => {
-                    const filled = state.active && state.level >= step;
-                    return (
-                      <Pressable
-                        key={step}
-                        style={[
-                          styles.levelBar,
-                          filled && styles.levelBarFilled,
-                        ]}
-                        onPress={() => handleSetLevel(ch.key, step)}
-                      />
-                    );
-                  })}
-                </View>
+                <VolumeSlider
+                  value={state.level}
+                  active={state.active}
+                  onValueChange={(val) => handleSetLevel(ch.key, val)}
+                />
 
                 <Pressable
                   style={styles.stepBtn}
-                  onPress={() => handleSetLevel(ch.key, state.level + 25)}
+                  onPress={() =>
+                    handleSetLevel(
+                      ch.key,
+                      state.active ? state.level + 15 : Math.max(25, state.level)
+                    )
+                  }
                 >
                   <Text style={styles.stepBtnText}>+</Text>
                 </Pressable>
 
                 <Text style={styles.percentText}>
-                  {state.active ? `${state.level}%` : 'OFF'}
+                  {isPlaying ? `${state.level}%` : 'OFF'}
                 </Text>
               </View>
             </View>
@@ -237,6 +327,19 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: COLORS.navy,
   },
+  engineNoteBox: {
+    backgroundColor: COLORS.surfaceSoft,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 8,
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+  },
+  engineNoteText: {
+    fontSize: 11,
+    color: COLORS.textMuted,
+    lineHeight: 15,
+  },
   presetRow: {
     flexDirection: 'row',
     gap: 6,
@@ -268,7 +371,7 @@ const styles = StyleSheet.create({
     color: COLORS.coral,
   },
   channelList: {
-    gap: 7,
+    gap: 8,
   },
   channelRow: {
     flexDirection: 'row',
@@ -277,8 +380,8 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   channelToggle: {
-    width: 104,
-    paddingHorizontal: 9,
+    width: 98,
+    paddingHorizontal: 8,
     paddingVertical: 6,
     borderRadius: 9,
     backgroundColor: COLORS.surfaceSoft,
@@ -319,22 +422,37 @@ const styles = StyleSheet.create({
     color: COLORS.navy,
     lineHeight: 16,
   },
-  barsRow: {
+  sliderTouchArea: {
     flex: 1,
-    flexDirection: 'row',
-    gap: 4,
+    height: 26,
+    justifyContent: 'center',
+    position: 'relative',
   },
-  levelBar: {
-    flex: 1,
-    height: 10,
-    borderRadius: 4,
+  sliderTrack: {
+    height: 7,
+    borderRadius: 999,
     backgroundColor: COLORS.cream,
     borderWidth: 1,
     borderColor: COLORS.border,
+    overflow: 'hidden',
   },
-  levelBarFilled: {
+  sliderFill: {
+    height: '100%',
     backgroundColor: COLORS.coral,
+    borderRadius: 999,
+  },
+  sliderThumb: {
+    position: 'absolute',
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: COLORS.surface,
+    borderWidth: 2,
+    borderColor: COLORS.border,
+  },
+  sliderThumbActive: {
     borderColor: COLORS.coral,
+    backgroundColor: COLORS.surface,
   },
   percentText: {
     width: 34,

@@ -57,8 +57,6 @@ interface LiveRoomScreenProps {
 
 type LiveViewTab = 'grid' | 'live' | 'archive';
 
-const MODE_ORDER: StudyMode[] = ['avatar', 'desk', 'face'];
-
 export function LiveRoomScreen({
   room,
   profile,
@@ -97,19 +95,34 @@ export function LiveRoomScreen({
   const [secondsLeft, setSecondsLeft] = useState<number>(initialFocusMinutes * 60);
   const [isRunning, setIsRunning] = useState<boolean>(false);
 
-  // Immediately dispose on navigation blur or back-swipe removal
+  // Immediately dispose audio and force camera OFF on navigation blur or back-swipe removal
   useEffect(() => {
-    const disposeNow = () => {
+    const cleanupRoomMedia = () => {
       audioEngineRef.current?.dispose();
       audioEngineRef.current = null;
+      onChangeStudyMode('avatar');
     };
-    const unsubBlur = navigation.addListener('blur', disposeNow);
-    const unsubBeforeRemove = navigation.addListener('beforeRemove', disposeNow);
+    const unsubBlur = navigation.addListener('blur', cleanupRoomMedia);
+    const unsubBeforeRemove = navigation.addListener('beforeRemove', cleanupRoomMedia);
     return () => {
       unsubBlur();
       unsubBeforeRemove();
     };
-  }, [navigation]);
+  }, [navigation, onChangeStudyMode]);
+
+  // Keep camera OFF on initial room entry and whenever losing focus or unmounting
+  useEffect(() => {
+    onChangeStudyMode('avatar');
+    return () => {
+      onChangeStudyMode('avatar');
+    };
+  }, [room?.id, onChangeStudyMode]);
+
+  useEffect(() => {
+    if (!isFocused) {
+      onChangeStudyMode('avatar');
+    }
+  }, [isFocused, onChangeStudyMode]);
 
   // Only run ambient audio while inside a live room and focused; dispose immediately on blur/unmount
   useEffect(() => {
@@ -257,13 +270,8 @@ export function LiveRoomScreen({
   const handleLeave = () => {
     audioEngineRef.current?.dispose();
     audioEngineRef.current = null;
+    onChangeStudyMode('avatar');
     onLeaveRoom(room.id);
-  };
-
-  const handleCycleStudyMode = () => {
-    const idx = MODE_ORDER.indexOf(profile.studyMode);
-    const nextMode = MODE_ORDER[(idx + 1) % MODE_ORDER.length];
-    onChangeStudyMode(nextMode);
   };
 
   const handleSend = () => {
@@ -598,8 +606,8 @@ export function LiveRoomScreen({
                         isTopContributor={topContributorIds.has(item.id)}
                         isOnCooldown={cooldownMs > 0}
                         onAskPrivateChat={(peer) => setActiveChatPeer(peer)}
-                        onCycleStudyMode={
-                          item.isCurrentUser ? handleCycleStudyMode : undefined
+                        onSelectStudyMode={
+                          item.isCurrentUser ? onChangeStudyMode : undefined
                         }
                       />
                     </View>

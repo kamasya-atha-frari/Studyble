@@ -106,7 +106,8 @@ export default function App() {
       if (!active) return;
       setRooms(data.rooms);
       setQuestions(data.questions);
-      setProfile(data.profile);
+      // Always start with camera OFF ('avatar') on app startup
+      setProfile({ ...data.profile, studyMode: 'avatar' });
       setIsLoading(false);
     })();
     return () => {
@@ -222,6 +223,7 @@ export default function App() {
 
   const handleChangeStudyMode = useCallback((studyMode: StudyMode) => {
     setProfile((prev) => {
+      if (prev.studyMode === studyMode) return prev;
       const updated: StudyProfileState = { ...prev, studyMode };
       void saveProfile(updated);
       return updated;
