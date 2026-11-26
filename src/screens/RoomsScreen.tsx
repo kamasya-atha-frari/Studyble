@@ -1,16 +1,25 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
-  FlatList,
   Image,
+  KeyboardAvoidingView,
+  LayoutChangeEvent,
+  Modal,
+  Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
+  useWindowDimensions,
 } from 'react-native';
+import {
+  ContainerBounds,
+  DraggablePomodoroClock,
+} from '../components/DraggablePomodoroClock';
 import { EmptyStateBox } from '../components/EmptyStateBox';
-import { SectionCard } from '../components/SectionCard';
+import { PomodoroDurationModal } from '../components/PomodoroDurationModal';
 import { COLORS } from '../theme/tokens';
 import { RoomCategory, StudyProfileState, StudyRoom } from '../types/studyble';
 
@@ -18,345 +27,226 @@ interface RoomsScreenProps {
   rooms: StudyRoom[];
   profile: StudyProfileState;
   onEnterLiveRoom: (roomId: string) => void;
-  onSessionComplete: (minutes: number) => void;
-  onUpdateFocusMinutes: (minutes: number) => void;
+  focusMinutes: number;
+  secondsLeft: number;
+  isRunning: boolean;
+  isAlarmFinished: boolean;
+  onSetFocusMinutes: (minutes: number) => void;
+  onToggleTimer: () => void;
+  onResetTimer: () => void;
+  onCreateInterestRoom: (title: string, coverImageUrl?: string) => void;
 }
 
-type CategoryFilter = 'All' | RoomCategory;
-type PomodoroPhase = 'focus' | 'shortBreak';
+interface RoomCoverTheme {
+  uri: string;
+  fallbackBg: string;
+}
 
-const SHORT_BREAK_MINUTES = 5;
-const MIN_FOCUS_MINUTES = 1;
-const MAX_FOCUS_MINUTES = 120;
-const FOCUS_PRESET_MINUTES: ReadonlyArray<number> = [15, 25, 45, 50];
-const POMODORO_ALARM_IMAGE = require('../../assets/pomodoro-alarm.png');
+interface CoverPresetOption {
+  id: string;
+  label: string;
+  uri: string;
+  fallbackBg: string;
+}
 
-const CATEGORIES: ReadonlyArray<CategoryFilter> = [
-  'All',
+const CATEGORIES: ReadonlyArray<RoomCategory> = [
   'General',
   'Major',
   'Course',
   'Interest',
 ];
 
+const INTEREST_COVER_PRESETS: ReadonlyArray<CoverPresetOption> = [
+  {
+    id: 'art',
+    label: 'Art',
+    uri: 'https://images.unsplash.com/photo-1513364776144-60967b0f800f?auto=format&fit=crop&w=700&q=80',
+    fallbackBg: '#EEDFD5',
+  },
+  {
+    id: 'food',
+    label: 'Food & Drink',
+    uri: 'https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?auto=format&fit=crop&w=700&q=80',
+    fallbackBg: '#EFE6D8',
+  },
+  {
+    id: 'sports',
+    label: 'Sports & Gym',
+    uri: 'https://images.unsplash.com/photo-1517836357463-d25dfeac3438?auto=format&fit=crop&w=700&q=80',
+    fallbackBg: '#D8E3EC',
+  },
+  {
+    id: 'social',
+    label: 'Social Impact',
+    uri: 'https://images.unsplash.com/photo-1529156069898-49953e39b3ac?auto=format&fit=crop&w=700&q=80',
+    fallbackBg: '#DCE8E5',
+  },
+  {
+    id: 'reading',
+    label: 'Books',
+    uri: 'https://images.unsplash.com/photo-1513475382585-d06e58bcb0e0?auto=format&fit=crop&w=700&q=80',
+    fallbackBg: '#F4E4DC',
+  },
+  {
+    id: 'music',
+    label: 'Music',
+    uri: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?auto=format&fit=crop&w=700&q=80',
+    fallbackBg: '#E3DFEC',
+  },
+];
+
+const ROOM_COVER_BY_ID: Record<string, RoomCoverTheme> = {
+  'room-1': {
+    uri: 'https://images.unsplash.com/photo-1517694712202-14dd9538aa97?auto=format&fit=crop&w=700&q=80',
+    fallbackBg: '#DCE8E5',
+  },
+  'room-2': {
+    uri: 'https://images.unsplash.com/photo-1456513080510-7bf3a84b82f8?auto=format&fit=crop&w=700&q=80',
+    fallbackBg: '#EFE6D8',
+  },
+  'room-3': {
+    uri: 'https://images.unsplash.com/photo-1498050108023-c5249f4df085?auto=format&fit=crop&w=700&q=80',
+    fallbackBg: '#DDE5F0',
+  },
+  'room-interest-art': {
+    uri: INTEREST_COVER_PRESETS[0].uri,
+    fallbackBg: INTEREST_COVER_PRESETS[0].fallbackBg,
+  },
+  'room-interest-food': {
+    uri: INTEREST_COVER_PRESETS[1].uri,
+    fallbackBg: INTEREST_COVER_PRESETS[1].fallbackBg,
+  },
+  'room-interest-sports': {
+    uri: INTEREST_COVER_PRESETS[2].uri,
+    fallbackBg: INTEREST_COVER_PRESETS[2].fallbackBg,
+  },
+  'room-interest-social': {
+    uri: INTEREST_COVER_PRESETS[3].uri,
+    fallbackBg: INTEREST_COVER_PRESETS[3].fallbackBg,
+  },
+};
+
+const ROOM_COVER_BY_CATEGORY: Record<RoomCategory, RoomCoverTheme> = {
+  Course: {
+    uri: 'https://images.unsplash.com/photo-1517694712202-14dd9538aa97?auto=format&fit=crop&w=700&q=80',
+    fallbackBg: '#DCE8E5',
+  },
+  General: {
+    uri: 'https://images.unsplash.com/photo-1456513080510-7bf3a84b82f8?auto=format&fit=crop&w=700&q=80',
+    fallbackBg: '#EFE6D8',
+  },
+  Major: {
+    uri: 'https://images.unsplash.com/photo-1498050108023-c5249f4df085?auto=format&fit=crop&w=700&q=80',
+    fallbackBg: '#DDE5F0',
+  },
+  Interest: {
+    uri: INTEREST_COVER_PRESETS[4].uri,
+    fallbackBg: INTEREST_COVER_PRESETS[4].fallbackBg,
+  },
+};
+
+function getRoomCover(room: StudyRoom): RoomCoverTheme {
+  if (room.coverImageUrl) {
+    const presetMatch = INTEREST_COVER_PRESETS.find(
+      (p) => p.uri === room.coverImageUrl
+    );
+    return {
+      uri: room.coverImageUrl,
+      fallbackBg: presetMatch?.fallbackBg ?? '#E8E3D9',
+    };
+  }
+  return ROOM_COVER_BY_ID[room.id] ?? ROOM_COVER_BY_CATEGORY[room.category];
+}
+
 export function RoomsScreen({
   rooms,
-  profile,
   onEnterLiveRoom,
-  onSessionComplete,
-  onUpdateFocusMinutes,
+  focusMinutes,
+  secondsLeft,
+  isRunning,
+  isAlarmFinished,
+  onSetFocusMinutes,
+  onToggleTimer,
+  onResetTimer,
+  onCreateInterestRoom,
 }: RoomsScreenProps) {
-  const focusMinutes = Math.max(1, profile.defaultFocusMinutes);
-  const [selectedCategory, setSelectedCategory] = useState<CategoryFilter>('All');
-  const [phase, setPhase] = useState<PomodoroPhase>('focus');
-  const [secondsLeft, setSecondsLeft] = useState<number>(focusMinutes * 60);
-  const [isRunning, setIsRunning] = useState<boolean>(false);
-  const [pomodoroNotice, setPomodoroNotice] = useState<string>('');
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const [selectedCategory, setSelectedCategory] = useState<RoomCategory>('General');
+  const [failedCoverIds, setFailedCoverIds] = useState<Record<string, boolean>>({});
+  const [createModalVisible, setCreateModalVisible] = useState<boolean>(false);
+  const [newGroupTitle, setNewGroupTitle] = useState<string>('');
+  const [selectedPresetId, setSelectedPresetId] = useState<string>(
+    INTEREST_COVER_PRESETS[0].id
+  );
+  const [createError, setCreateError] = useState<string>('');
+  const [clockSettingsOpen, setClockSettingsOpen] = useState<boolean>(false);
+  const [stageBounds, setStageBounds] = useState<ContainerBounds>({
+    width: windowWidth,
+    height: Math.max(320, windowHeight - 140),
+  });
 
-  // Keep idle focus duration synced when user updates Default Focus Duration in Profile
-  useEffect(() => {
-    if (phase === 'focus' && !isRunning) {
-      setSecondsLeft(focusMinutes * 60);
+  const isAlarmRinging = isAlarmFinished || secondsLeft === 0;
+  const isInterestView = selectedCategory === 'Interest';
+
+  const handleStageLayout = (event: LayoutChangeEvent) => {
+    const { width, height } = event.nativeEvent.layout;
+    if (width <= 0 || height <= 0) return;
+    setStageBounds((prev) =>
+      prev.width === width && prev.height === height ? prev : { width, height }
+    );
+  };
+
+  const handleOpenCreateGroup = () => {
+    setNewGroupTitle('');
+    setSelectedPresetId(INTEREST_COVER_PRESETS[0].id);
+    setCreateError('');
+    setCreateModalVisible(true);
+  };
+
+  const handleSubmitCreateGroup = () => {
+    const clean = newGroupTitle.trim();
+    if (!clean) {
+      setCreateError('Please enter a group name.');
+      return;
     }
-  }, [focusMinutes, phase, isRunning]);
-
-  useEffect(() => {
-    if (!isRunning) return;
-    const id = setInterval(() => {
-      setSecondsLeft((prev) => Math.max(0, prev - 1));
-    }, 1000);
-    return () => clearInterval(id);
-  }, [isRunning]);
-
-  useEffect(() => {
-    if (!isRunning || secondsLeft > 0) return;
-    setIsRunning(false);
-    if (phase === 'focus') {
-      onSessionComplete(focusMinutes);
-      setPhase('shortBreak');
-      setSecondsLeft(SHORT_BREAK_MINUTES * 60);
-      setPomodoroNotice(
-        `Focus block finished! +5 pts earned — ready for a ${SHORT_BREAK_MINUTES}m short break.`
-      );
-    } else {
-      setPhase('focus');
-      setSecondsLeft(focusMinutes * 60);
-      setPomodoroNotice(
-        `Short break done! Ready for a ${focusMinutes}m focus block.`
-      );
-    }
-  }, [isRunning, secondsLeft, phase, focusMinutes, onSessionComplete]);
-
-  useEffect(() => {
-    if (!pomodoroNotice) return;
-    const timer = setTimeout(() => setPomodoroNotice(''), 3500);
-    return () => clearTimeout(timer);
-  }, [pomodoroNotice]);
-
-  const handleSelectPhase = (nextPhase: PomodoroPhase) => {
-    setIsRunning(false);
-    setPhase(nextPhase);
-    setSecondsLeft(
-      (nextPhase === 'focus' ? focusMinutes : SHORT_BREAK_MINUTES) * 60
-    );
+    const chosenPreset =
+      INTEREST_COVER_PRESETS.find((p) => p.id === selectedPresetId) ??
+      INTEREST_COVER_PRESETS[0];
+    onCreateInterestRoom(clean, chosenPreset.uri);
+    setCreateModalVisible(false);
+    setNewGroupTitle('');
+    setCreateError('');
   };
 
-  const handleResetTimer = () => {
-    setIsRunning(false);
-    setSecondsLeft(
-      (phase === 'focus' ? focusMinutes : SHORT_BREAK_MINUTES) * 60
-    );
-  };
+  const filteredRooms = useMemo(
+    () => rooms.filter((room) => room.category === selectedCategory),
+    [rooms, selectedCategory]
+  );
 
-  const handleAdjustFocusMinutes = (nextMinutes: number) => {
-    const clamped = Math.max(
-      MIN_FOCUS_MINUTES,
-      Math.min(MAX_FOCUS_MINUTES, Math.round(nextMinutes))
-    );
-    onUpdateFocusMinutes(clamped);
-    if (phase === 'focus' && !isRunning) {
-      setSecondsLeft(clamped * 60);
-    }
-  };
-
-  const handleCompleteSession = () => {
-    setIsRunning(false);
-    onSessionComplete(focusMinutes);
-    setPhase('focus');
-    setSecondsLeft(focusMinutes * 60);
-    setPomodoroNotice(
-      `Session completed! +5 pts and +${focusMinutes}m added to your profile.`
-    );
-  };
-
-  const mins = Math.floor(secondsLeft / 60);
-  const secs = secondsLeft % 60;
-  const formattedTimer = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-
-  const filteredRooms = useMemo(() => {
-    if (selectedCategory === 'All') return rooms;
-    return rooms.filter((room) => room.category === selectedCategory);
-  }, [rooms, selectedCategory]);
-
-  const listFooter = (
-    <View style={styles.listFooterWrap}>
-      {/* Standalone Pomodoro Timer at the bottom (below live rooms) */}
-      <SectionCard style={styles.pomodoroCard}>
-        <View style={styles.pomodoroTopRow}>
-          <View style={styles.pomodoroTitleGroup}>
-            <View style={styles.pomodoroMascotBadge}>
-              <Image
-                source={POMODORO_ALARM_IMAGE}
-                style={styles.pomodoroMascotImage}
-                resizeMode="contain"
-              />
-            </View>
-            <View>
-              <Text style={styles.pomodoroEyebrow}>SOLO POMODORO TIMER</Text>
-              <Text style={styles.pomodoroSubtitle}>
-                Study anytime — no live room required
-              </Text>
-            </View>
-          </View>
-          <View
-            style={[
-              styles.phaseStatusPill,
-              phase === 'shortBreak' && styles.phaseStatusPillBreak,
-            ]}
-          >
-            <Text style={styles.phaseStatusText}>
-              {isRunning
-                ? phase === 'focus'
-                  ? '● Focusing'
-                  : '● On Break'
-                : phase === 'focus'
-                ? 'Focus'
-                : 'Break'}
-            </Text>
-          </View>
-        </View>
-
-        {/* Focus Duration Controls: Preset pills + - / + stepper */}
-        <View style={styles.durationSection}>
-          <View style={styles.durationHeaderRow}>
-            <Text style={styles.durationLabel}>FOCUS DURATION</Text>
-            <View style={styles.stepperRow}>
-              <Pressable
-                style={[
-                  styles.stepperBtn,
-                  focusMinutes <= MIN_FOCUS_MINUTES && styles.stepperBtnDisabled,
-                ]}
-                onPress={() => handleAdjustFocusMinutes(focusMinutes - 5)}
-                disabled={focusMinutes <= MIN_FOCUS_MINUTES}
-                accessibilityLabel="Decrease focus duration by 5 minutes"
-              >
-                <Text style={styles.stepperBtnText}>−5</Text>
-              </Pressable>
-              <Pressable
-                style={[
-                  styles.stepperBtn,
-                  focusMinutes <= MIN_FOCUS_MINUTES && styles.stepperBtnDisabled,
-                ]}
-                onPress={() => handleAdjustFocusMinutes(focusMinutes - 1)}
-                disabled={focusMinutes <= MIN_FOCUS_MINUTES}
-                accessibilityLabel="Decrease focus duration by 1 minute"
-              >
-                <Text style={styles.stepperBtnText}>−</Text>
-              </Pressable>
-              <Text style={styles.stepperValue}>{focusMinutes}m</Text>
-              <Pressable
-                style={[
-                  styles.stepperBtn,
-                  focusMinutes >= MAX_FOCUS_MINUTES && styles.stepperBtnDisabled,
-                ]}
-                onPress={() => handleAdjustFocusMinutes(focusMinutes + 1)}
-                disabled={focusMinutes >= MAX_FOCUS_MINUTES}
-                accessibilityLabel="Increase focus duration by 1 minute"
-              >
-                <Text style={styles.stepperBtnText}>+</Text>
-              </Pressable>
-              <Pressable
-                style={[
-                  styles.stepperBtn,
-                  focusMinutes >= MAX_FOCUS_MINUTES && styles.stepperBtnDisabled,
-                ]}
-                onPress={() => handleAdjustFocusMinutes(focusMinutes + 5)}
-                disabled={focusMinutes >= MAX_FOCUS_MINUTES}
-                accessibilityLabel="Increase focus duration by 5 minutes"
-              >
-                <Text style={styles.stepperBtnText}>+5</Text>
-              </Pressable>
-            </View>
-          </View>
-
-          <View style={styles.presetRow}>
-            {FOCUS_PRESET_MINUTES.map((preset) => {
-              const active = focusMinutes === preset;
-              return (
-                <Pressable
-                  key={preset}
-                  style={[styles.presetPill, active && styles.presetPillActive]}
-                  onPress={() => handleAdjustFocusMinutes(preset)}
-                >
-                  <Text
-                    style={[
-                      styles.presetPillText,
-                      active && styles.presetPillTextActive,
-                    ]}
-                  >
-                    {preset}m
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        </View>
-
-        <View style={styles.phaseRow}>
-          <Pressable
-            style={[styles.phaseTab, phase === 'focus' && styles.phaseTabActive]}
-            onPress={() => handleSelectPhase('focus')}
-          >
-            <Text
-              style={[
-                styles.phaseTabText,
-                phase === 'focus' && styles.phaseTabTextActive,
-              ]}
-            >
-              Focus ({focusMinutes}m)
-            </Text>
-          </Pressable>
-          <Pressable
-            style={[
-              styles.phaseTab,
-              phase === 'shortBreak' && styles.phaseTabBreakActive,
-            ]}
-            onPress={() => handleSelectPhase('shortBreak')}
-          >
-            <Text
-              style={[
-                styles.phaseTabText,
-                phase === 'shortBreak' && styles.phaseTabTextActive,
-              ]}
-            >
-              Short Break ({SHORT_BREAK_MINUTES}m)
-            </Text>
-          </Pressable>
-        </View>
-
-        <View style={styles.pomodoroMainRow}>
-          <Text style={styles.pomodoroTime}>{formattedTimer}</Text>
-          <View style={styles.pomodoroControls}>
-            <Pressable
-              style={[
-                styles.pomodoroStartBtn,
-                isRunning && styles.pomodoroPauseBtn,
-              ]}
-              onPress={() => setIsRunning((prev) => !prev)}
-            >
-              <Text style={styles.pomodoroStartText}>
-                {isRunning ? 'Pause' : 'Start'}
-              </Text>
-            </Pressable>
-            <Pressable
-              style={styles.pomodoroResetBtn}
-              onPress={handleResetTimer}
-            >
-              <Text style={styles.pomodoroResetText}>Reset</Text>
-            </Pressable>
-          </View>
-        </View>
-
-        <Pressable
-          style={styles.pomodoroCompleteBtn}
-          onPress={handleCompleteSession}
-        >
-          <Text style={styles.pomodoroCompleteText}>Complete (+5 pts)</Text>
-        </Pressable>
-
-        {pomodoroNotice ? (
-          <View style={styles.pomodoroNoticeBanner}>
-            <Text style={styles.pomodoroNoticeText}>✓ {pomodoroNotice}</Text>
-          </View>
-        ) : null}
-      </SectionCard>
-    </View>
+  const cardWidth = Math.max(
+    148,
+    Math.min(200, Math.floor((stageBounds.width - 46) / 2))
   );
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <View style={styles.container}>
-        <View style={styles.headerRow}>
-          <View>
+      <View style={styles.flex} onLayout={handleStageLayout}>
+        <ScrollView
+          style={styles.flex}
+          contentContainerStyle={[
+            styles.scrollContent,
+            isInterestView && styles.scrollContentWithFab,
+          ]}
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Centered Studyble Header (no student member card, no points label) */}
+          <View style={styles.headerBlock}>
             <Text style={styles.brandEyebrow}>CO-WORKING STUDY SPACE</Text>
             <Text style={styles.headerTitle}>Studyble</Text>
           </View>
-          <View style={styles.pointsPill}>
-            <Text style={styles.pointsPillValue}>{profile.points} pts</Text>
-            <Text style={styles.pointsPillLabel}>
-              {profile.completedSessions} sessions
-            </Text>
-          </View>
-        </View>
 
-        <SectionCard style={styles.welcomeCard}>
-          <View style={styles.welcomeTop}>
-            <Text style={styles.welcomeName}>{profile.studentName}</Text>
-            <View style={styles.majorBadge}>
-              <Text style={styles.majorBadgeText}>{profile.jurusan}</Text>
-            </View>
-          </View>
-          <Text style={styles.goalText} numberOfLines={2}>
-            Goal: {profile.goal}
-          </Text>
-        </SectionCard>
-
-        <View style={styles.filterContainer}>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.filterRow}
-          >
+          {/* Centered Category Filter Chips */}
+          <View style={styles.filterContainer}>
             {CATEGORIES.map((category) => {
               const active = selectedCategory === category;
               return (
@@ -365,402 +255,265 @@ export function RoomsScreen({
                   style={[styles.chip, active && styles.chipActive]}
                   onPress={() => setSelectedCategory(category)}
                 >
-                  <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                  <Text
+                    style={[styles.chipText, active && styles.chipTextActive]}
+                  >
                     {category}
                   </Text>
                 </Pressable>
               );
             })}
-          </ScrollView>
-        </View>
+          </View>
 
-        <FlatList
-          data={filteredRooms}
-          keyExtractor={(item) => item.id}
-          ListFooterComponent={listFooter}
-          contentContainerStyle={styles.listContent}
-          showsVerticalScrollIndicator={false}
-          ListEmptyComponent={
-            <EmptyStateBox
-              title={`No live rooms in ${selectedCategory}`}
-              subtitle="There are no active study tables in this category right now. Switch back to All to join another session."
-              actionLabel="Show All Rooms"
-              onAction={() => setSelectedCategory('All')}
-            />
-          }
-          renderItem={({ item }) => {
-            const verifiedCount = item.messages.filter((m) => m.verified).length;
-            return (
-              <SectionCard style={styles.roomCard}>
-                <View style={styles.roomTop}>
-                  <View style={styles.badgeRow}>
-                    <View style={styles.livePill}>
-                      <Text style={styles.livePillText}>● LIVE</Text>
+          {/* Centered Study Room Grid (Cover Image + Centered Subject Title) */}
+          {filteredRooms.length > 0 ? (
+            <View style={styles.roomsGrid}>
+              {filteredRooms.map((item) => {
+                const cover = getRoomCover(item);
+                const coverFailed = Boolean(failedCoverIds[item.id]);
+                return (
+                  <Pressable
+                    key={item.id}
+                    style={({ pressed }) => [
+                      styles.roomCard,
+                      { width: cardWidth },
+                      pressed && styles.roomCardPressed,
+                    ]}
+                    onPress={() => onEnterLiveRoom(item.id)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Enter ${item.title}`}
+                  >
+                    <View
+                      style={[
+                        styles.coverWrap,
+                        { backgroundColor: cover.fallbackBg },
+                      ]}
+                    >
+                      {!coverFailed ? (
+                        <Image
+                          source={{ uri: cover.uri }}
+                          style={styles.coverImage}
+                          resizeMode="cover"
+                          onError={() =>
+                            setFailedCoverIds((prev) => ({
+                              ...prev,
+                              [item.id]: true,
+                            }))
+                          }
+                        />
+                      ) : null}
                     </View>
-                    <View style={styles.categoryPill}>
-                      <Text style={styles.categoryPillText}>{item.category}</Text>
-                    </View>
-                  </View>
-                  <Text style={styles.roomStudents}>
-                    {item.activeStudents} studying
-                  </Text>
-                </View>
-
-                <Text style={styles.roomTitle}>{item.title}</Text>
-
-                <View style={styles.roomMetaRow}>
-                  <Text style={styles.roomFocus}>
-                    {item.focusMinutes} min block · {item.messages.length} posts
-                  </Text>
-                  {verifiedCount > 0 ? (
-                    <View style={styles.verifiedMiniBadge}>
-                      <Text style={styles.verifiedMiniText}>
-                        ✓ {verifiedCount} verified
+                    <View style={styles.roomCardBody}>
+                      <Text style={styles.roomTitle} numberOfLines={2}>
+                        {item.title}
                       </Text>
                     </View>
-                  ) : null}
-                </View>
-
-                <View style={styles.roomFooter}>
-                  <Text style={styles.roomStatusHint}>
-                    {item.isJoined
-                      ? 'You are seated at this table'
-                      : 'Open co-working table'}
-                  </Text>
-                  <Pressable
-                    style={[styles.joinBtn, item.isJoined && styles.joinedBtn]}
-                    onPress={() => onEnterLiveRoom(item.id)}
-                  >
-                    <Text style={styles.joinBtnText}>
-                      {item.isJoined ? 'Enter Live →' : 'Join Live'}
-                    </Text>
                   </Pressable>
-                </View>
-              </SectionCard>
-            );
-          }}
+                );
+              })}
+            </View>
+          ) : isInterestView ? (
+            <View style={styles.emptyWrap}>
+              <EmptyStateBox
+                title="No interest groups yet"
+                subtitle="Tap Create Group below to start a new Interest study room."
+                actionLabel="Create Group"
+                onAction={handleOpenCreateGroup}
+              />
+            </View>
+          ) : (
+            <View style={styles.emptyWrap}>
+              <EmptyStateBox
+                title={`No live rooms in ${selectedCategory}`}
+                subtitle="There are no active study tables in this category right now. Switch to General to join another session."
+                actionLabel={
+                  selectedCategory !== 'General' ? 'Show General Rooms' : undefined
+                }
+                onAction={
+                  selectedCategory !== 'General'
+                    ? () => setSelectedCategory('General')
+                    : undefined
+                }
+              />
+            </View>
+          )}
+        </ScrollView>
+
+        {/* Floating Create Group Pill Button (Interest View Only) */}
+        {isInterestView ? (
+          <Pressable
+            style={({ pressed }) => [
+              styles.createGroupFab,
+              pressed && styles.createGroupFabPressed,
+            ]}
+            onPress={handleOpenCreateGroup}
+            accessibilityRole="button"
+            accessibilityLabel="Create Group"
+          >
+            <Text style={styles.createGroupFabIcon}>👥</Text>
+            <Text style={styles.createGroupFabText}>Create Group</Text>
+          </Pressable>
+        ) : null}
+
+        {/* Draggable Transparent Pomodoro Alarm Clock Mascot (1x Tap: Start/Pause, 2x Tap: Settings) */}
+        <DraggablePomodoroClock
+          size={104}
+          zIndex={50}
+          initialCorner="bottom-left"
+          containerBounds={stageBounds}
+          isRunning={isRunning}
+          isAlarmRinging={isAlarmRinging}
+          onSingleTap={onToggleTimer}
+          onDoubleTap={() => setClockSettingsOpen(true)}
         />
       </View>
+
+      {/* Create Interest Group Modal */}
+      <Modal
+        visible={createModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setCreateModalVisible(false)}
+      >
+        <KeyboardAvoidingView
+          style={styles.modalBackdrop}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+          <View style={styles.modalCard}>
+            <Text style={styles.modalEyebrow}>NEW INTEREST GROUP</Text>
+            <Text style={styles.modalTitle}>Create Study Group</Text>
+
+            <Text style={styles.modalLabel}>Group Name</Text>
+            <TextInput
+              style={styles.modalInput}
+              value={newGroupTitle}
+              onChangeText={(text) => {
+                setNewGroupTitle(text);
+                if (createError) setCreateError('');
+              }}
+              placeholder="e.g. Photography, Book Club, Coding..."
+              placeholderTextColor={COLORS.textMuted}
+              maxLength={32}
+              autoFocus
+              returnKeyType="done"
+              onSubmitEditing={handleSubmitCreateGroup}
+            />
+            {createError ? (
+              <Text style={styles.modalError}>{createError}</Text>
+            ) : null}
+
+            <Text style={styles.modalLabel}>Cover Style</Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.presetRow}
+            >
+              {INTEREST_COVER_PRESETS.map((preset) => {
+                const active = selectedPresetId === preset.id;
+                return (
+                  <Pressable
+                    key={preset.id}
+                    style={[
+                      styles.presetTile,
+                      { backgroundColor: preset.fallbackBg },
+                      active && styles.presetTileActive,
+                    ]}
+                    onPress={() => setSelectedPresetId(preset.id)}
+                  >
+                    <Image
+                      source={{ uri: preset.uri }}
+                      style={StyleSheet.absoluteFill}
+                      resizeMode="cover"
+                    />
+                    <View style={styles.presetScrim}>
+                      <Text style={styles.presetLabel} numberOfLines={1}>
+                        {preset.label}
+                      </Text>
+                    </View>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+
+            <View style={styles.modalActions}>
+              <Pressable
+                style={styles.modalCancelBtn}
+                onPress={() => setCreateModalVisible(false)}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                style={styles.modalCreateBtn}
+                onPress={handleSubmitCreateGroup}
+              >
+                <Text style={styles.modalCreateText}>Create Group</Text>
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+      <PomodoroDurationModal
+        visible={clockSettingsOpen}
+        focusMinutes={focusMinutes}
+        secondsLeft={secondsLeft}
+        isRunning={isRunning}
+        isAlarmFinished={isAlarmFinished}
+        onSetFocusMinutes={onSetFocusMinutes}
+        onToggleTimer={onToggleTimer}
+        onResetTimer={onResetTimer}
+        onClose={() => setClockSettingsOpen(false)}
+      />
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
+  flex: {
+    flex: 1,
+  },
   safeArea: {
     flex: 1,
     backgroundColor: COLORS.cream,
   },
-  container: {
-    flex: 1,
-    paddingHorizontal: 16,
-    paddingTop: 12,
-  },
-  headerRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+  scrollContent: {
+    flexGrow: 1,
     alignItems: 'center',
-    marginBottom: 12,
+    paddingTop: 18,
+    paddingBottom: 32,
+  },
+  scrollContentWithFab: {
+    paddingBottom: 92,
+  },
+  headerBlock: {
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 16,
+    marginBottom: 16,
+    gap: 2,
   },
   brandEyebrow: {
     fontSize: 10,
     fontWeight: '700',
-    letterSpacing: 1,
+    letterSpacing: 1.2,
     color: COLORS.sage,
+    textAlign: 'center',
   },
   headerTitle: {
     fontSize: 28,
     fontWeight: '800',
     color: COLORS.navy,
-  },
-  pointsPill: {
-    backgroundColor: COLORS.surface,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    alignItems: 'flex-end',
-  },
-  pointsPillValue: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: COLORS.coral,
-  },
-  pointsPillLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: COLORS.textMuted,
-  },
-  listFooterWrap: {
-    marginTop: 6,
-  },
-  pomodoroCard: {
-    backgroundColor: COLORS.navy,
-    borderColor: COLORS.navy,
-    padding: 14,
-    gap: 10,
-  },
-  pomodoroTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 8,
-  },
-  pomodoroTitleGroup: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 9,
-    flex: 1,
-  },
-  pomodoroMascotBadge: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: '#FFFFFF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 2,
-  },
-  pomodoroMascotImage: {
-    width: 28,
-    height: 28,
-  },
-  durationSection: {
-    backgroundColor: COLORS.navySoft,
-    borderRadius: 10,
-    padding: 9,
-    gap: 8,
-  },
-  durationHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 8,
-  },
-  durationLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 0.7,
-    color: '#CBD5E1',
-  },
-  stepperRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-  },
-  stepperBtn: {
-    backgroundColor: COLORS.navy,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 253, 249, 0.2)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 7,
-    minWidth: 28,
-    alignItems: 'center',
-  },
-  stepperBtnDisabled: {
-    opacity: 0.4,
-  },
-  stepperBtnText: {
-    fontSize: 11,
-    fontWeight: '800',
-    color: COLORS.cream,
-  },
-  stepperValue: {
-    fontSize: 12,
-    fontWeight: '800',
-    color: COLORS.cream,
-    minWidth: 34,
     textAlign: 'center',
-    fontVariant: ['tabular-nums'],
-  },
-  presetRow: {
-    flexDirection: 'row',
-    gap: 6,
-  },
-  presetPill: {
-    flex: 1,
-    paddingVertical: 5,
-    borderRadius: 8,
-    backgroundColor: COLORS.navy,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 253, 249, 0.16)',
-    alignItems: 'center',
-  },
-  presetPillActive: {
-    backgroundColor: COLORS.coral,
-    borderColor: COLORS.coral,
-  },
-  presetPillText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#CBD5E1',
-  },
-  presetPillTextActive: {
-    color: COLORS.surface,
-  },
-  pomodoroEyebrow: {
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 0.9,
-    color: COLORS.coral,
-  },
-  pomodoroSubtitle: {
-    fontSize: 12,
-    color: '#CBD5E1',
-    marginTop: 2,
-  },
-  phaseStatusPill: {
-    backgroundColor: COLORS.navySoft,
-    borderWidth: 1,
-    borderColor: COLORS.coral,
-    paddingHorizontal: 9,
-    paddingVertical: 3,
-    borderRadius: 999,
-  },
-  phaseStatusPillBreak: {
-    borderColor: COLORS.sage,
-  },
-  phaseStatusText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: COLORS.cream,
-  },
-  phaseRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  phaseTab: {
-    flex: 1,
-    paddingVertical: 7,
-    paddingHorizontal: 10,
-    borderRadius: 9,
-    backgroundColor: COLORS.navySoft,
-    alignItems: 'center',
-  },
-  phaseTabActive: {
-    backgroundColor: COLORS.coral,
-  },
-  phaseTabBreakActive: {
-    backgroundColor: COLORS.sage,
-  },
-  phaseTabText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#CBD5E1',
-  },
-  phaseTabTextActive: {
-    color: COLORS.surface,
-  },
-  pomodoroMainRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 10,
-  },
-  pomodoroTime: {
-    fontSize: 32,
-    fontWeight: '800',
-    color: COLORS.cream,
-    fontVariant: ['tabular-nums'],
-  },
-  pomodoroControls: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  pomodoroStartBtn: {
-    backgroundColor: COLORS.coral,
-    paddingHorizontal: 16,
-    paddingVertical: 9,
-    borderRadius: 10,
-  },
-  pomodoroPauseBtn: {
-    backgroundColor: COLORS.navySoft,
-    borderWidth: 1,
-    borderColor: COLORS.coral,
-  },
-  pomodoroStartText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: COLORS.surface,
-  },
-  pomodoroResetBtn: {
-    backgroundColor: COLORS.navySoft,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 253, 249, 0.25)',
-    paddingHorizontal: 13,
-    paddingVertical: 9,
-    borderRadius: 10,
-  },
-  pomodoroResetText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: COLORS.cream,
-  },
-  pomodoroCompleteBtn: {
-    backgroundColor: COLORS.sage,
-    paddingVertical: 9,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    alignItems: 'center',
-  },
-  pomodoroCompleteText: {
-    fontSize: 12,
-    fontWeight: '800',
-    color: COLORS.surface,
-  },
-  pomodoroNoticeBanner: {
-    backgroundColor: 'rgba(42, 111, 104, 0.28)',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-  },
-  pomodoroNoticeText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: COLORS.cream,
-  },
-  welcomeCard: {
-    padding: 13,
-    gap: 6,
-    marginBottom: 12,
-    backgroundColor: COLORS.surface,
-  },
-  welcomeTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 8,
-  },
-  welcomeName: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: COLORS.navy,
-    flexShrink: 1,
-  },
-  majorBadge: {
-    backgroundColor: COLORS.sageSoft,
-    paddingHorizontal: 9,
-    paddingVertical: 3,
-    borderRadius: 999,
-  },
-  majorBadgeText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: COLORS.sage,
-  },
-  goalText: {
-    fontSize: 12,
-    color: COLORS.textMuted,
-    lineHeight: 17,
   },
   filterContainer: {
-    marginBottom: 12,
-  },
-  filterRow: {
+    width: '100%',
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    alignItems: 'center',
     gap: 8,
-    paddingVertical: 2,
+    paddingHorizontal: 16,
+    marginBottom: 18,
   },
   chip: {
     paddingHorizontal: 14,
@@ -769,6 +522,8 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     borderWidth: 1,
     borderColor: COLORS.border,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   chipActive: {
     backgroundColor: COLORS.navy,
@@ -778,107 +533,203 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     color: COLORS.textPrimary,
+    textAlign: 'center',
   },
   chipTextActive: {
     color: COLORS.surface,
   },
-  listContent: {
-    gap: 12,
-    paddingBottom: 24,
+  roomsGrid: {
+    width: '100%',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 14,
+    paddingHorizontal: 16,
+    marginBottom: 20,
   },
   roomCard: {
-    gap: 9,
+    borderRadius: 18,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    overflow: 'hidden',
+    shadowColor: '#0F172A',
+    shadowOpacity: 0.08,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
   },
-  roomTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+  roomCardPressed: {
+    opacity: 0.92,
+    transform: [{ scale: 0.985 }],
+  },
+  coverWrap: {
+    width: '100%',
+    height: 122,
+  },
+  coverImage: {
+    width: '100%',
+    height: '100%',
+  },
+  roomCardBody: {
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    minHeight: 62,
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  badgeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  livePill: {
-    backgroundColor: COLORS.coralSoft,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 999,
-  },
-  livePillText: {
-    fontSize: 11,
+  roomTitle: {
+    fontSize: 14.5,
     fontWeight: '800',
-    color: COLORS.coral,
+    color: COLORS.navy,
+    lineHeight: 20,
+    textAlign: 'center',
   },
-  categoryPill: {
+  emptyWrap: {
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 16,
+    marginBottom: 18,
+  },
+  createGroupFab: {
+    position: 'absolute',
+    right: 16,
+    bottom: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    backgroundColor: '#FDE047',
+    borderRadius: 999,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    shadowColor: '#0F172A',
+    shadowOpacity: 0.22,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 6,
+  },
+  createGroupFabPressed: {
+    opacity: 0.9,
+    transform: [{ scale: 0.97 }],
+  },
+  createGroupFabIcon: {
+    fontSize: 15,
+  },
+  createGroupFabText: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#14213D',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.55)',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  modalCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    padding: 18,
+    gap: 10,
+  },
+  modalEyebrow: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.9,
+    color: COLORS.sage,
+    textAlign: 'center',
+  },
+  modalTitle: {
+    fontSize: 19,
+    fontWeight: '800',
+    color: COLORS.navy,
+    textAlign: 'center',
+  },
+  modalLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.navy,
+    textAlign: 'center',
+  },
+  modalInput: {
     backgroundColor: COLORS.surfaceSoft,
     borderWidth: 1,
     borderColor: COLORS.border,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 999,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: COLORS.navy,
+    textAlign: 'center',
   },
-  categoryPillText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: COLORS.textMuted,
-  },
-  roomStudents: {
+  modalError: {
     fontSize: 12,
     fontWeight: '600',
-    color: COLORS.sage,
+    color: COLORS.danger,
+    textAlign: 'center',
   },
-  roomTitle: {
-    fontSize: 17,
+  presetRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 2,
+  },
+  presetTile: {
+    width: 86,
+    height: 64,
+    borderRadius: 12,
+    overflow: 'hidden',
+    justifyContent: 'flex-end',
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  presetTileActive: {
+    borderColor: '#14213D',
+  },
+  presetScrim: {
+    backgroundColor: 'rgba(15, 23, 42, 0.48)',
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    alignItems: 'center',
+  },
+  presetLabel: {
+    fontSize: 10,
     fontWeight: '800',
+    color: '#FFFFFF',
+    textAlign: 'center',
+  },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 10,
+    marginTop: 6,
+  },
+  modalCancelBtn: {
+    backgroundColor: COLORS.surfaceSoft,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 12,
+  },
+  modalCancelText: {
+    fontSize: 13,
+    fontWeight: '700',
     color: COLORS.navy,
   },
-  roomMetaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
+  modalCreateBtn: {
+    backgroundColor: '#FDE047',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 12,
   },
-  roomFocus: {
-    fontSize: 12,
-    color: COLORS.textMuted,
-  },
-  verifiedMiniBadge: {
-    backgroundColor: COLORS.sageSoft,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 999,
-  },
-  verifiedMiniText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: COLORS.sage,
-  },
-  roomFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.border,
-  },
-  roomStatusHint: {
-    fontSize: 12,
-    color: COLORS.textMuted,
-    fontWeight: '500',
-  },
-  joinBtn: {
-    backgroundColor: COLORS.coral,
-    paddingHorizontal: 15,
-    paddingVertical: 8,
-    borderRadius: 10,
-  },
-  joinedBtn: {
-    backgroundColor: COLORS.sage,
-  },
-  joinBtnText: {
-    color: COLORS.surface,
-    fontWeight: '700',
-    fontSize: 12,
+  modalCreateText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#14213D',
   },
 });

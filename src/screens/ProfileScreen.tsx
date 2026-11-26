@@ -16,9 +16,13 @@ import { StudyReceiptModal } from '../components/StudyReceiptModal';
 import { COLORS } from '../theme/tokens';
 import { StudyMode, StudyProfileState } from '../types/studyble';
 import {
+  DAILY_VERIFIED_LIMIT_LOW_LEVEL,
   PRIVATE_HELP_REWARD_POINTS,
+  QNA_VERIFIED_ANSWER_POINTS,
   getPeerCooldownRemainingMs,
   getProgressionInfo,
+  getTodayVerifiedCount,
+  isSubjectToDailyVerifiedCap,
 } from '../utils/progression';
 
 interface ProfileScreenProps {
@@ -71,6 +75,16 @@ export function ProfileScreen({
     () => getProgressionInfo(profile.points),
     [profile.points]
   );
+
+  const todayVerifiedCount = useMemo(
+    () =>
+      getTodayVerifiedCount(
+        profile.dailyVerifiedDate,
+        profile.dailyVerifiedCount
+      ),
+    [profile.dailyVerifiedDate, profile.dailyVerifiedCount]
+  );
+  const hasDailyCap = isSubjectToDailyVerifiedCap(progression.level);
 
   const activeCooldownCount = useMemo(() => {
     const now = Date.now();
@@ -165,8 +179,12 @@ export function ProfileScreen({
           <Pressable
             style={styles.receiptLaunchBtn}
             onPress={() => setReceiptVisible(true)}
+            accessibilityRole="button"
+            accessibilityLabel="Open Study Receipt (Kartu Rekap)"
           >
-            <Text style={styles.receiptLaunchText}>🧾 View & Share Study Receipt</Text>
+            <Text style={styles.receiptLaunchText}>
+              🧾 Study Receipt · Kartu Rekap
+            </Text>
           </Pressable>
         </SectionCard>
 
@@ -203,14 +221,14 @@ export function ProfileScreen({
           )}
         </SectionCard>
 
-        {/* Private Chat Availability & Anti-Farming */}
+        {/* Private Chat Availability */}
         <SectionCard style={styles.settingCard}>
           <View style={styles.switchHeaderRow}>
             <View style={styles.switchCopy}>
               <Text style={styles.sectionLabel}>PRIVATE CHAT AVAILABILITY</Text>
               <Text style={styles.switchStatusText}>
                 {profile.privateChatEnabled
-                  ? 'ON — Open for 1-on-1 peer questions'
+                  ? 'ON — Open for "Ask" peer questions'
                   : 'OFF — Quiet study mode'}
               </Text>
             </View>
@@ -224,13 +242,9 @@ export function ProfileScreen({
             />
           </View>
 
-          <Text style={styles.storageHint}>
-            Helping or completing a verified 1-on-1 session grants +{PRIVATE_HELP_REWARD_POINTS} points. To prevent point farming, each peer has a 24-hour cooldown persisted locally in AsyncStorage.
-          </Text>
-
           {profile.privateChatEnabled ? (
             <>
-              <Text style={styles.fieldLabel}>1-on-1 Help Topic / Motif</Text>
+              <Text style={styles.fieldLabel}>Ask Topic / Motif</Text>
               <TextInput
                 style={styles.input}
                 value={motifInput}
@@ -251,6 +265,34 @@ export function ProfileScreen({
             <View style={styles.cooldownSummaryPill}>
               <Text style={styles.cooldownSummaryText}>
                 ⏳ {activeCooldownCount} peer{activeCooldownCount > 1 ? 's' : ''} currently in 24h anti-farming cooldown
+              </Text>
+            </View>
+          ) : null}
+        </SectionCard>
+
+        {/* Dedicated Rules Section */}
+        <SectionCard style={styles.settingCard}>
+          <Text style={styles.sectionLabel}>RULES</Text>
+
+          <View style={styles.rulesList}>
+            <Text style={styles.ruleItem}>
+              • <Text style={styles.ruleBold}>Verified Completion:</Text> In Private Chat, “Complete Verified” appears only after the peer replies with an answer and the questioner marks it as correct (+{PRIVATE_HELP_REWARD_POINTS} pts, 24h cooldown per peer). Verified Q&A answers award +{QNA_VERIFIED_ANSWER_POINTS} pt.
+            </Text>
+            <Text style={styles.ruleItem}>
+              • <Text style={styles.ruleBold}>Question Lock:</Text> Once a question/ask receives at least 1 answer or has been verified once, asking again on that question is disabled (normal chat remains open).
+            </Text>
+            <Text style={styles.ruleItem}>
+              • <Text style={styles.ruleBold}>Once-Per-Person Verification:</Text> Each individual user can verify a given answer only once.
+            </Text>
+            <Text style={styles.ruleItem}>
+              • <Text style={styles.ruleBold}>Daily Limit (Levels 1–10):</Text> Users in Level 1–10 can earn up to {DAILY_VERIFIED_LIMIT_LOW_LEVEL} verified answers per day (resets automatically each new calendar day).
+            </Text>
+          </View>
+
+          {hasDailyCap ? (
+            <View style={styles.dailyCapPill}>
+              <Text style={styles.dailyCapText}>
+                Today’s verified answers (Lv.{progression.level}): {todayVerifiedCount} / {DAILY_VERIFIED_LIMIT_LOW_LEVEL}
               </Text>
             </View>
           ) : null}
@@ -613,6 +655,31 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: COLORS.textMuted,
+  },
+  rulesList: {
+    gap: 7,
+  },
+  ruleItem: {
+    fontSize: 12,
+    color: COLORS.textPrimary,
+    lineHeight: 18,
+  },
+  ruleBold: {
+    fontWeight: '800',
+    color: COLORS.navy,
+  },
+  dailyCapPill: {
+    backgroundColor: COLORS.sageSoft,
+    borderWidth: 1,
+    borderColor: COLORS.sage,
+    borderRadius: 9,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  dailyCapText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.sage,
   },
   fieldLabel: {
     fontSize: 12,
