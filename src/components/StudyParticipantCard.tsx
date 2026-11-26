@@ -24,13 +24,6 @@ const STUDY_MODE_META: Record<
     pillBg: COLORS.surface,
     pillText: COLORS.navy,
   },
-  desk: {
-    label: 'Desk',
-    icon: '💡',
-    stageBg: '#EAE4D6',
-    pillBg: COLORS.navy,
-    pillText: COLORS.cream,
-  },
   face: {
     label: 'Face',
     icon: '📷',
@@ -38,7 +31,18 @@ const STUDY_MODE_META: Record<
     pillBg: COLORS.sage,
     pillText: COLORS.surface,
   },
+  desk: {
+    label: 'Desk',
+    icon: '💡',
+    stageBg: '#EAE4D6',
+    pillBg: COLORS.navy,
+    pillText: COLORS.cream,
+  },
 };
+
+type CameraMode = 'face' | 'desk';
+
+const CAMERA_MODES: ReadonlyArray<CameraMode> = ['face', 'desk'];
 
 export function StudyParticipantCard({
   participant,
@@ -53,28 +57,27 @@ export function StudyParticipantCard({
   const hasAutoRequestedRef = useRef<boolean>(false);
 
   const [deskFacing, setDeskFacing] = useState<CameraType>('back');
-  const [faceConfirmed, setFaceConfirmed] = useState<boolean>(false);
-  const [facePromptVisible, setFacePromptVisible] = useState<boolean>(false);
+  const [cameraConfirmed, setCameraConfirmed] = useState<boolean>(false);
+  const [pendingCameraMode, setPendingCameraMode] = useState<CameraMode | null>(null);
 
-  const isDeskActive = participant.studyMode === 'desk';
-  const isFaceActive = participant.studyMode === 'face' && faceConfirmed;
-  const isCameraOn = isDeskActive || isFaceActive;
+  const isFaceActive = participant.studyMode === 'face' && cameraConfirmed;
+  const isDeskActive = participant.studyMode === 'desk' && cameraConfirmed;
+  const isCameraOn = isFaceActive || isDeskActive;
 
-  // Reset desk lens default to back on desk entry; clear face confirmation whenever leaving face or blurring
+  // Reset desk lens default to back on desk entry; require fresh confirmation whenever returning to avatar
   useEffect(() => {
     if (participant.studyMode === 'desk') {
       setDeskFacing('back');
-      setFaceConfirmed(false);
     } else if (participant.studyMode === 'avatar') {
-      setFaceConfirmed(false);
-      setFacePromptVisible(false);
+      setCameraConfirmed(false);
+      setPendingCameraMode(null);
     }
   }, [participant.studyMode]);
 
   useEffect(() => {
     if (!isScreenFocused) {
-      setFaceConfirmed(false);
-      setFacePromptVisible(false);
+      setCameraConfirmed(false);
+      setPendingCameraMode(null);
     }
   }, [isScreenFocused]);
 
@@ -83,7 +86,7 @@ export function StudyParticipantCard({
   );
   const canRenderLiveCamera = Boolean(wantsLiveCamera && permission?.granted);
 
-  // Request camera permission only once the user has actively enabled Desk or confirmed Face mode
+  // Request camera permission only after the user confirms turning the camera ON
   useEffect(() => {
     if (!wantsLiveCamera) {
       hasAutoRequestedRef.current = false;
@@ -107,47 +110,53 @@ export function StudyParticipantCard({
     }
   };
 
+  const activateCameraMode = (targetMode: CameraMode) => {
+    if (!onSelectStudyMode) return;
+    if (targetMode === 'desk') {
+      setDeskFacing('back');
+    }
+    setCameraConfirmed(true);
+    requestCameraPermissionIfNeeded();
+    onSelectStudyMode(targetMode);
+  };
+
+  const handleSelectCameraMode = (targetMode: CameraMode) => {
+    if (!onSelectStudyMode) return;
+    if (isCameraOn && participant.studyMode === targetMode) return;
+
+    // When camera is already ON, switch seamlessly between Face and Desk without re-prompting
+    if (isCameraOn) {
+      setPendingCameraMode(null);
+      activateCameraMode(targetMode);
+      return;
+    }
+
+    // Whenever turning camera ON from OFF ('avatar'), show heads-up confirmation gate first
+    setPendingCameraMode(targetMode);
+  };
+
+  const handleCancelCameraPrompt = () => {
+    setPendingCameraMode(null);
+  };
+
+  const handleConfirmCameraOn = () => {
+    if (!pendingCameraMode) return;
+    const targetMode = pendingCameraMode;
+    setPendingCameraMode(null);
+    activateCameraMode(targetMode);
+  };
+
   const handleToggleCamera = () => {
     if (!onSelectStudyMode) return;
     if (isCameraOn) {
-      setFaceConfirmed(false);
-      setFacePromptVisible(false);
+      setCameraConfirmed(false);
+      setPendingCameraMode(null);
       onSelectStudyMode('avatar');
       return;
     }
 
-    // Turning camera ON defaults safely to Desk (rear camera) so Face never opens unexpectedly
-    setDeskFacing('back');
-    requestCameraPermissionIfNeeded();
-    onSelectStudyMode('desk');
-  };
-
-  const handleSelectDeskMode = () => {
-    if (!onSelectStudyMode) return;
-    setFaceConfirmed(false);
-    setFacePromptVisible(false);
-    setDeskFacing('back');
-    requestCameraPermissionIfNeeded();
-    onSelectStudyMode('desk');
-  };
-
-  const handleRequestFaceMode = () => {
-    if (!onSelectStudyMode) return;
-    if (isFaceActive) return;
-    // Always show heads-up confirmation gate before activating front camera
-    setFacePromptVisible(true);
-  };
-
-  const handleCancelFacePrompt = () => {
-    setFacePromptVisible(false);
-  };
-
-  const handleConfirmFaceCamera = () => {
-    if (!onSelectStudyMode) return;
-    setFacePromptVisible(false);
-    setFaceConfirmed(true);
-    requestCameraPermissionIfNeeded();
-    onSelectStudyMode('face');
+    // Turning camera ON from OFF defaults to Face first (Face -> Desk), gated by confirmation
+    handleSelectCameraMode('face');
   };
 
   const handleFlipDeskCamera = () => {
@@ -256,7 +265,9 @@ export function StudyParticipantCard({
                 </Pressable>
               )
             ) : participant.studyMode === 'desk' ? (
-              <Text style={styles.stageSubLabel}>Desk lamp on</Text>
+              <Text style={styles.stageSubLabel}>
+                {participant.isCurrentUser ? 'Camera off' : 'Desk lamp on'}
+              </Text>
             ) : participant.studyMode === 'face' ? (
               <Text style={styles.stageSubLabel}>
                 {participant.isCurrentUser ? 'Camera off' : 'Cam focus active'}
@@ -330,38 +341,31 @@ export function StudyParticipantCard({
           </Pressable>
 
           <View style={styles.camModeRow}>
-            <Pressable
-              style={[
-                styles.camModePill,
-                isDeskActive && styles.camModePillActive,
-              ]}
-              onPress={handleSelectDeskMode}
-            >
-              <Text
-                style={[
-                  styles.camModePillText,
-                  isDeskActive && styles.camModePillTextActive,
-                ]}
-              >
-                Desk
-              </Text>
-            </Pressable>
-            <Pressable
-              style={[
-                styles.camModePill,
-                isFaceActive && styles.camModePillActive,
-              ]}
-              onPress={handleRequestFaceMode}
-            >
-              <Text
-                style={[
-                  styles.camModePillText,
-                  isFaceActive && styles.camModePillTextActive,
-                ]}
-              >
-                Face
-              </Text>
-            </Pressable>
+            {CAMERA_MODES.map((mode) => {
+              const isFace = mode === 'face';
+              const active = isFace ? isFaceActive : isDeskActive;
+              return (
+                <Pressable
+                  key={mode}
+                  style={[
+                    styles.camModePill,
+                    active && styles.camModePillActive,
+                  ]}
+                  onPress={() => handleSelectCameraMode(mode)}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                >
+                  <Text
+                    style={[
+                      styles.camModePillText,
+                      active && styles.camModePillTextActive,
+                    ]}
+                  >
+                    {STUDY_MODE_META[mode].label}
+                  </Text>
+                </Pressable>
+              );
+            })}
           </View>
         </View>
       ) : participant.privateChatEnabled && !participant.isBot && onAskPrivateChat ? (
@@ -387,34 +391,36 @@ export function StudyParticipantCard({
         </View>
       )}
 
-      {/* Privacy Confirmation Gate Modal before opening Front Camera ('face') */}
+      {/* Universal Camera Turn-On Confirmation Gate Modal (OFF -> ON) */}
       {participant.isCurrentUser ? (
         <Modal
-          visible={facePromptVisible}
+          visible={pendingCameraMode !== null}
           transparent
           animationType="fade"
-          onRequestClose={handleCancelFacePrompt}
+          onRequestClose={handleCancelCameraPrompt}
         >
           <View style={styles.modalBackdrop}>
             <View style={styles.modalCard}>
-              <Text style={styles.modalEyebrow}>FRONT CAMERA HEADS-UP</Text>
-              <Text style={styles.modalTitle}>Ready to show your face?</Text>
+              <Text style={styles.modalEyebrow}>CAMERA HEADS-UP</Text>
+              <Text style={styles.modalTitle}>Ready to turn on your camera?</Text>
               <Text style={styles.modalBody}>
-                Turning on Face mode activates your front-facing camera in the live study room. Take a moment to get ready—for example, put on your hijab or adjust your desk—before continuing.
+                {pendingCameraMode === 'desk'
+                  ? 'Turning on Desk mode activates your camera (starting with the rear lens) in the live study room. Take a moment to get ready or adjust your space before continuing.'
+                  : 'Turning on Face mode activates your front-facing camera in the live study room. Take a moment to get ready—for example, put on your hijab or adjust your desk—before continuing.'}
               </Text>
 
               <View style={styles.modalActions}>
                 <Pressable
                   style={styles.modalCancelBtn}
-                  onPress={handleCancelFacePrompt}
+                  onPress={handleCancelCameraPrompt}
                 >
                   <Text style={styles.modalCancelText}>Cancel</Text>
                 </Pressable>
                 <Pressable
                   style={styles.modalConfirmBtn}
-                  onPress={handleConfirmFaceCamera}
+                  onPress={handleConfirmCameraOn}
                 >
-                  <Text style={styles.modalConfirmText}>Turn On Front Cam</Text>
+                  <Text style={styles.modalConfirmText}>Turn On Camera</Text>
                 </Pressable>
               </View>
             </View>
