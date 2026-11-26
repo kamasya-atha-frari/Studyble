@@ -12,20 +12,32 @@ import { EmptyStateBox } from '../components/EmptyStateBox';
 import { SectionCard } from '../components/SectionCard';
 import { COLORS } from '../theme/tokens';
 import { QuestionItem } from '../types/studyble';
+import {
+  DAILY_VERIFIED_LIMIT_LOW_LEVEL,
+  QNA_VERIFIED_ANSWER_POINTS,
+  VerificationResult,
+} from '../utils/progression';
 
 interface QuestionDetailScreenProps {
   question: QuestionItem | undefined;
+  studentName: string;
+  verifiedItemIds: string[];
   onAddAnswer: (questionId: string, body: string) => void;
+  onVerifyAnswer: (questionId: string, answerId: string) => VerificationResult;
   onBack: () => void;
 }
 
 export function QuestionDetailScreen({
   question,
+  studentName,
+  verifiedItemIds,
   onAddAnswer,
+  onVerifyAnswer,
   onBack,
 }: QuestionDetailScreenProps) {
   const [answerText, setAnswerText] = useState<string>('');
   const [errorMsg, setErrorMsg] = useState<string>('');
+  const [verifyNotice, setVerifyNotice] = useState<string>('');
 
   if (!question) {
     return (
@@ -43,6 +55,13 @@ export function QuestionDetailScreen({
     );
   }
 
+  const hasAnyVerifiedAnswer =
+    Boolean(question.verified) ||
+    question.answers.some(
+      (a) => Boolean(a.verified) || (a.verifiedBy?.length ?? 0) > 0
+    );
+  const isQuestionLocked = question.answers.length >= 1 || hasAnyVerifiedAnswer;
+
   const handleReply = () => {
     const clean = answerText.trim();
     if (!clean) {
@@ -54,6 +73,21 @@ export function QuestionDetailScreen({
     setErrorMsg('');
   };
 
+  const handleVerify = (answerId: string) => {
+    const result = onVerifyAnswer(question.id, answerId);
+    if (result.awarded) {
+      setVerifyNotice(
+        `✓ Answer verified! +${QNA_VERIFIED_ANSWER_POINTS} pt awarded.`
+      );
+    } else if (result.reason === 'already_verified') {
+      setVerifyNotice('You already verified this answer (once per person).');
+    } else if (result.reason === 'daily_limit') {
+      setVerifyNotice(
+        `Daily limit reached (${DAILY_VERIFIED_LIMIT_LOW_LEVEL}/${DAILY_VERIFIED_LIMIT_LOW_LEVEL} verified answers today for Lv.1–10).`
+      );
+    }
+  };
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.container}>
@@ -62,7 +96,18 @@ export function QuestionDetailScreen({
         </Pressable>
 
         <SectionCard style={styles.mainCard}>
-          <Text style={styles.topic}>{question.topic}</Text>
+          <View style={styles.topRow}>
+            <Text style={styles.topic}>{question.topic}</Text>
+            {isQuestionLocked ? (
+              <View style={styles.lockedPill}>
+                <Text style={styles.lockedPillText}>
+                  {hasAnyVerifiedAnswer
+                    ? '✓ Verified · Ask locked'
+                    : 'Answered · Ask locked'}
+                </Text>
+              </View>
+            ) : null}
+          </View>
           <Text style={styles.title}>{question.title}</Text>
           <Text style={styles.detail}>{question.detail}</Text>
           <Text style={styles.meta}>
@@ -72,6 +117,10 @@ export function QuestionDetailScreen({
 
         <Text style={styles.sectionHeading}>Answers</Text>
 
+        {verifyNotice ? (
+          <Text style={styles.verifyNotice}>{verifyNotice}</Text>
+        ) : null}
+
         <FlatList
           data={question.answers}
           keyExtractor={(item) => item.id}
@@ -79,18 +128,56 @@ export function QuestionDetailScreen({
           ListEmptyComponent={
             <EmptyStateBox
               title="No answers yet"
-              subtitle="Share a helpful explanation below (+3 pts)."
+              subtitle="Share a clear explanation below so peers can verify it."
             />
           }
-          renderItem={({ item }) => (
-            <SectionCard style={styles.answerCard}>
-              <View style={styles.answerHeader}>
-                <Text style={styles.author}>{item.author}</Text>
-                <Text style={styles.time}>{item.createdAt}</Text>
-              </View>
-              <Text style={styles.answerBody}>{item.body}</Text>
-            </SectionCard>
-          )}
+          renderItem={({ item }) => {
+            const itemKey = `qna:${question.id}:${item.id}`;
+            const hasVerifiedBySelf =
+              verifiedItemIds.includes(itemKey) ||
+              Boolean(item.verifiedBy?.includes(studentName));
+            const isVerified = Boolean(item.verified) || hasVerifiedBySelf;
+
+            return (
+              <SectionCard
+                style={[styles.answerCard, isVerified && styles.answerCardVerified]}
+              >
+                <View style={styles.answerHeader}>
+                  <Text style={styles.author}>{item.author}</Text>
+                  <Text style={styles.time}>{item.createdAt}</Text>
+                </View>
+                <Text style={styles.answerBody}>{item.body}</Text>
+
+                <View style={styles.answerFooter}>
+                  {isVerified ? (
+                    <View style={styles.verifiedTag}>
+                      <Text style={styles.verifiedTagText}>✓ Verified</Text>
+                    </View>
+                  ) : (
+                    <View />
+                  )}
+
+                  <Pressable
+                    style={[
+                      styles.verifyBtn,
+                      hasVerifiedBySelf && styles.verifyBtnDisabled,
+                    ]}
+                    onPress={() => handleVerify(item.id)}
+                    disabled={hasVerifiedBySelf}
+                  >
+                    <Text
+                      style={[
+                        styles.verifyBtnText,
+                        hasVerifiedBySelf && styles.verifyBtnTextDisabled,
+                      ]}
+                    >
+                      {hasVerifiedBySelf ? 'Verified ✓' : 'Verify Answer'}
+                    </Text>
+                  </Pressable>
+                </View>
+              </SectionCard>
+            );
+          }}
         />
 
         <SectionCard style={styles.replyBox}>
@@ -139,10 +226,29 @@ const styles = StyleSheet.create({
     gap: 8,
     marginBottom: 14,
   },
+  topRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 8,
+  },
   topic: {
     fontSize: 12,
     fontWeight: '700',
     color: COLORS.coral,
+  },
+  lockedPill: {
+    backgroundColor: COLORS.surfaceSoft,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 999,
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+  },
+  lockedPillText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.textMuted,
   },
   title: {
     fontSize: 18,
@@ -164,6 +270,12 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '800',
     color: COLORS.navy,
+    marginBottom: 6,
+  },
+  verifyNotice: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.sage,
     marginBottom: 8,
   },
   listContent: {
@@ -171,7 +283,11 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
   },
   answerCard: {
-    gap: 6,
+    gap: 8,
+  },
+  answerCardVerified: {
+    borderColor: COLORS.sage,
+    backgroundColor: '#FAFDFC',
   },
   answerHeader: {
     flexDirection: 'row',
@@ -190,6 +306,44 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: COLORS.textPrimary,
     lineHeight: 20,
+  },
+  answerFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+  },
+  verifiedTag: {
+    backgroundColor: COLORS.sageSoft,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+  },
+  verifiedTagText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: COLORS.sage,
+  },
+  verifyBtn: {
+    backgroundColor: COLORS.sage,
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  verifyBtnDisabled: {
+    backgroundColor: COLORS.surfaceSoft,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  verifyBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.surface,
+  },
+  verifyBtnTextDisabled: {
+    color: COLORS.textMuted,
   },
   replyBox: {
     flexDirection: 'row',
