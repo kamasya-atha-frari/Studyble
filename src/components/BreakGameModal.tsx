@@ -12,8 +12,15 @@ interface MemoryCard {
 
 interface BreakGameModalProps {
   visible: boolean;
+  breakSecondsLeft?: number | null;
   onClose: () => void;
 }
+
+const MAX_MOVES = 12;
+const AUTO_RETURN_DELAY_MS = 500;
+const MISMATCH_FLIP_DELAY_MS = 650;
+const AUTO_SHUFFLE_DELAY_MS = 450;
+const SHUFFLE_NOTICE_DURATION_MS = 2400;
 
 const STUDY_PAIRS: ReadonlyArray<{ pairId: string; emoji: string; label: string }> = [
   { pairId: 'coffee', emoji: '☕', label: 'Coffee' },
@@ -39,64 +46,162 @@ function createShuffledDeck(): MemoryCard[] {
   return doubled;
 }
 
-export function BreakGameModal({ visible, onClose }: BreakGameModalProps) {
+export function BreakGameModal({
+  visible,
+  breakSecondsLeft = null,
+  onClose,
+}: BreakGameModalProps) {
   const [cards, setCards] = useState<MemoryCard[]>(() => createShuffledDeck());
   const [flippedIds, setFlippedIds] = useState<string[]>([]);
   const [moves, setMoves] = useState<number>(0);
   const [isLocked, setIsLocked] = useState<boolean>(false);
+  const [shuffleNotice, setShuffleNotice] = useState<string>('');
 
   const flipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const shuffleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onCloseRef = useRef(onClose);
 
-  const clearPendingTimer = () => {
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  const clearAllTimers = () => {
     if (flipTimerRef.current) {
       clearTimeout(flipTimerRef.current);
       flipTimerRef.current = null;
     }
+    if (shuffleTimerRef.current) {
+      clearTimeout(shuffleTimerRef.current);
+      shuffleTimerRef.current = null;
+    }
+    if (noticeTimerRef.current) {
+      clearTimeout(noticeTimerRef.current);
+      noticeTimerRef.current = null;
+    }
+    if (autoCloseTimerRef.current) {
+      clearTimeout(autoCloseTimerRef.current);
+      autoCloseTimerRef.current = null;
+    }
   };
 
+  // Deal a fresh board each time the modal opens, and clear timers on hide/unmount
   useEffect(() => {
-    return () => clearPendingTimer();
-  }, []);
-
-  const handleRestart = () => {
-    clearPendingTimer();
-    setCards(createShuffledDeck());
-    setFlippedIds([]);
-    setMoves(0);
-    setIsLocked(false);
-  };
+    clearAllTimers();
+    if (visible) {
+      setCards(createShuffledDeck());
+      setFlippedIds([]);
+      setMoves(0);
+      setIsLocked(false);
+      setShuffleNotice('');
+    }
+    return () => clearAllTimers();
+  }, [visible]);
 
   const matchedPairs = cards.filter((c) => c.matched).length / 2;
   const isComplete = matchedPairs === STUDY_PAIRS.length;
 
+  // Automatically return to the live room shortly after all pairs are matched
+  useEffect(() => {
+    if (!visible || !isComplete) return;
+    if (autoCloseTimerRef.current) {
+      clearTimeout(autoCloseTimerRef.current);
+    }
+    autoCloseTimerRef.current = setTimeout(() => {
+      autoCloseTimerRef.current = null;
+      onCloseRef.current();
+    }, AUTO_RETURN_DELAY_MS);
+
+    return () => {
+      if (autoCloseTimerRef.current) {
+        clearTimeout(autoCloseTimerRef.current);
+        autoCloseTimerRef.current = null;
+      }
+    };
+  }, [visible, isComplete]);
+
+  const triggerAutoShuffle = () => {
+    setIsLocked(true);
+    if (flipTimerRef.current) {
+      clearTimeout(flipTimerRef.current);
+      flipTimerRef.current = null;
+    }
+    if (shuffleTimerRef.current) {
+      clearTimeout(shuffleTimerRef.current);
+    }
+    setShuffleNotice(`${MAX_MOVES}-move limit exceeded — auto-shuffling new board...`);
+    shuffleTimerRef.current = setTimeout(() => {
+      shuffleTimerRef.current = null;
+      setCards(createShuffledDeck());
+      setFlippedIds([]);
+      setMoves(0);
+      setIsLocked(false);
+      setShuffleNotice('↻ New board dealt! Moves reset to 0.');
+
+      if (noticeTimerRef.current) {
+        clearTimeout(noticeTimerRef.current);
+      }
+      noticeTimerRef.current = setTimeout(() => {
+        noticeTimerRef.current = null;
+        setShuffleNotice('');
+      }, SHUFFLE_NOTICE_DURATION_MS);
+    }, AUTO_SHUFFLE_DELAY_MS);
+  };
+
+  const formattedBreakTimer =
+    typeof breakSecondsLeft === 'number' && breakSecondsLeft > 0
+      ? `${String(Math.floor(breakSecondsLeft / 60)).padStart(2, '0')}:${String(
+          breakSecondsLeft % 60
+        ).padStart(2, '0')}`
+      : null;
+
   const handlePressCard = (card: MemoryCard) => {
-    if (isLocked || card.matched || flippedIds.includes(card.id)) return;
+    if (isLocked || isComplete || card.matched || flippedIds.includes(card.id)) {
+      return;
+    }
 
     const nextFlipped = [...flippedIds, card.id];
     setFlippedIds(nextFlipped);
 
     if (nextFlipped.length < 2) return;
 
-    setMoves((prev) => prev + 1);
+    const nextMoves = moves + 1;
+    setMoves(nextMoves);
+
     const firstCard = cards.find((c) => c.id === nextFlipped[0]);
     if (!firstCard) return;
 
-    if (firstCard.pairId === card.pairId) {
+    const isMatch = firstCard.pairId === card.pairId;
+    const willComplete = isMatch && matchedPairs + 1 === STUDY_PAIRS.length;
+
+    if (isMatch) {
       setCards((prev) =>
         prev.map((item) =>
           item.pairId === card.pairId ? { ...item, matched: true } : item
         )
       );
       setFlippedIds([]);
-    } else {
-      setIsLocked(true);
-      clearPendingTimer();
-      flipTimerRef.current = setTimeout(() => {
-        setFlippedIds([]);
-        setIsLocked(false);
-        flipTimerRef.current = null;
-      }, 650);
+      if (!willComplete && nextMoves > MAX_MOVES) {
+        triggerAutoShuffle();
+      }
+      return;
     }
+
+    if (nextMoves > MAX_MOVES) {
+      triggerAutoShuffle();
+      return;
+    }
+
+    setIsLocked(true);
+    if (flipTimerRef.current) {
+      clearTimeout(flipTimerRef.current);
+    }
+    flipTimerRef.current = setTimeout(() => {
+      setFlippedIds([]);
+      setIsLocked(false);
+      flipTimerRef.current = null;
+    }, MISMATCH_FLIP_DELAY_MS);
   };
 
   return (
@@ -113,13 +218,15 @@ export function BreakGameModal({ visible, onClose }: BreakGameModalProps) {
               <Text style={styles.eyebrow}>TAKE A BREAK · MINI-GAME</Text>
               <Text style={styles.title}>Study Memory Match</Text>
             </View>
-            <Pressable style={styles.closeBtn} onPress={onClose}>
-              <Text style={styles.closeBtnText}>Back to Room</Text>
-            </Pressable>
+            {formattedBreakTimer ? (
+              <View style={styles.breakTimerPill}>
+                <Text style={styles.breakTimerText}>⏱ {formattedBreakTimer}</Text>
+              </View>
+            ) : null}
           </View>
 
           <Text style={styles.subtitle}>
-            Match all 6 cozy study pairs to refresh your mind. Your active room and timer stay safely intact.
+            Match all 6 cozy study pairs within {MAX_MOVES} moves. Exceeding {MAX_MOVES} moves automatically deals a fresh board.
           </Text>
 
           <View style={styles.statsRow}>
@@ -128,19 +235,34 @@ export function BreakGameModal({ visible, onClose }: BreakGameModalProps) {
                 Pairs: {matchedPairs} / {STUDY_PAIRS.length}
               </Text>
             </View>
-            <View style={styles.statPill}>
-              <Text style={styles.statText}>Moves: {moves}</Text>
+            <View
+              style={[
+                styles.statPill,
+                moves >= MAX_MOVES && styles.statPillWarning,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.statText,
+                  moves >= MAX_MOVES && styles.statTextWarning,
+                ]}
+              >
+                Moves: {Math.min(moves, MAX_MOVES)} / {MAX_MOVES}
+              </Text>
             </View>
-            <Pressable style={styles.resetPill} onPress={handleRestart}>
-              <Text style={styles.resetPillText}>Shuffle ↻</Text>
-            </Pressable>
           </View>
+
+          {shuffleNotice ? (
+            <View style={styles.shuffleBanner}>
+              <Text style={styles.shuffleBannerText}>{shuffleNotice}</Text>
+            </View>
+          ) : null}
 
           {isComplete ? (
             <View style={styles.winBanner}>
-              <Text style={styles.winTitle}>🎉 Nice mental reset!</Text>
+              <Text style={styles.winTitle}>🎉 All 6 pairs matched!</Text>
               <Text style={styles.winSub}>
-                You matched all 6 pairs in {moves} moves. Ready for your next focus block?
+                Returning to your live study room...
               </Text>
             </View>
           ) : null}
@@ -171,15 +293,6 @@ export function BreakGameModal({ visible, onClose }: BreakGameModalProps) {
               );
             })}
           </View>
-
-          <View style={styles.footerRow}>
-            <Pressable style={styles.secondaryBtn} onPress={handleRestart}>
-              <Text style={styles.secondaryBtnText}>Play Again</Text>
-            </Pressable>
-            <Pressable style={styles.primaryBtn} onPress={onClose}>
-              <Text style={styles.primaryBtnText}>Resume Studying</Text>
-            </Pressable>
-          </View>
         </View>
       </View>
     </Modal>
@@ -204,7 +317,7 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     gap: 8,
   },
   eyebrow: {
@@ -218,19 +331,6 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: COLORS.navy,
   },
-  closeBtn: {
-    backgroundColor: COLORS.surface,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    paddingHorizontal: 11,
-    paddingVertical: 6,
-    borderRadius: 8,
-  },
-  closeBtnText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: COLORS.navy,
-  },
   subtitle: {
     fontSize: 12,
     color: COLORS.textMuted,
@@ -239,7 +339,20 @@ const styles = StyleSheet.create({
   statsRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexWrap: 'wrap',
     gap: 8,
+  },
+  breakTimerPill: {
+    backgroundColor: COLORS.coral,
+    borderRadius: 999,
+    paddingHorizontal: 11,
+    paddingVertical: 5,
+  },
+  breakTimerText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: COLORS.surface,
+    fontVariant: ['tabular-nums'],
   },
   statPill: {
     backgroundColor: COLORS.surface,
@@ -249,24 +362,30 @@ const styles = StyleSheet.create({
     paddingHorizontal: 11,
     paddingVertical: 5,
   },
+  statPillWarning: {
+    backgroundColor: COLORS.coralSoft,
+    borderColor: COLORS.coral,
+  },
   statText: {
     fontSize: 12,
     fontWeight: '700',
     color: COLORS.navy,
   },
-  resetPill: {
-    marginLeft: 'auto',
-    backgroundColor: COLORS.sageSoft,
-    borderWidth: 1,
-    borderColor: COLORS.sage,
-    borderRadius: 999,
-    paddingHorizontal: 11,
-    paddingVertical: 5,
+  statTextWarning: {
+    color: COLORS.coral,
   },
-  resetPillText: {
+  shuffleBanner: {
+    backgroundColor: COLORS.coralSoft,
+    borderWidth: 1,
+    borderColor: COLORS.coral,
+    borderRadius: 12,
+    paddingHorizontal: 11,
+    paddingVertical: 8,
+  },
+  shuffleBannerText: {
     fontSize: 12,
     fontWeight: '700',
-    color: COLORS.sage,
+    color: COLORS.coral,
   },
   winBanner: {
     backgroundColor: COLORS.sageSoft,
@@ -321,36 +440,5 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '700',
     color: COLORS.navy,
-  },
-  footerRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 4,
-  },
-  secondaryBtn: {
-    backgroundColor: COLORS.surface,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 10,
-    alignItems: 'center',
-  },
-  secondaryBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: COLORS.navy,
-  },
-  primaryBtn: {
-    flex: 1,
-    backgroundColor: COLORS.coral,
-    paddingVertical: 10,
-    borderRadius: 10,
-    alignItems: 'center',
-  },
-  primaryBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: COLORS.surface,
   },
 });

@@ -1,13 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Animated,
-  Easing,
   FlatList,
-  Image,
   KeyboardAvoidingView,
+  LayoutChangeEvent,
+  Modal,
+  NativeScrollEvent,
+  NativeSyntheticEvent,
   Platform,
   Pressable,
   SafeAreaView,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -17,12 +19,15 @@ import {
 import { useIsFocused, useNavigation } from '@react-navigation/native';
 import { AmbientAudioEngine } from '../audio/ambientAudioEngine';
 import { AmbientMixerBar, getAmbientSummary } from '../components/AmbientMixerBar';
-import { BreakGameModal } from '../components/BreakGameModal';
+import {
+  ContainerBounds,
+  DraggablePomodoroClock,
+} from '../components/DraggablePomodoroClock';
 import { EmptyStateBox } from '../components/EmptyStateBox';
+import { PomodoroDurationModal } from '../components/PomodoroDurationModal';
 import { PrivateChatModal } from '../components/PrivateChatModal';
 import { SectionCard } from '../components/SectionCard';
 import { StudyParticipantCard } from '../components/StudyParticipantCard';
-import { StudyReceiptModal } from '../components/StudyReceiptModal';
 import {
   STUDY_COMPANION_BOTS,
   VERIFIED_VOTE_THRESHOLD,
@@ -32,12 +37,14 @@ import {
   AmbientMixerState,
   LiveMessageItem,
   LiveMessageKind,
+  LiveVoteChoice,
   StudyMode,
   StudyParticipant,
   StudyProfileState,
   StudyRoom,
 } from '../types/studyble';
 import {
+  VerificationResult,
   getPeerCooldownRemainingMs,
   getProgressionInfo,
   sortParticipantsByWeeklyContribution,
@@ -49,18 +56,30 @@ interface LiveRoomScreenProps {
   onLeaveRoom: (roomId: string) => void;
   onSendLiveMessage: (roomId: string, text: string, kind: LiveMessageKind) => void;
   onToggleLiveVote: (roomId: string, messageId: string) => void;
-  onSessionComplete: (minutes: number) => void;
+  onSubmitLiveAnswer: (roomId: string, questionId: string, answerText: string) => void;
+  onVoteLiveAnswer: (roomId: string, answerId: string, choice: LiveVoteChoice) => void;
+  onDismissLiveAnswer: (roomId: string) => void;
   onChangeStudyMode: (mode: StudyMode) => void;
-  onCompletePrivateHelp: (peerId: string) => {
-    awarded: boolean;
-    remainingMs: number;
-  };
+  onUpdateGoal: (nextGoal: string) => void;
+  onCompletePrivateHelp: (peerId: string, answerId: string) => VerificationResult;
   onUpdateAmbientMixer: (next: AmbientMixerState) => void;
+  focusMinutes: number;
+  secondsLeft: number;
+  breakSecondsLeft: number | null;
+  isRunning: boolean;
+  isAlarmFinished: boolean;
+  isBreakOverlayActive: boolean;
+  onSetFocusMinutes: (minutes: number) => void;
+  onToggleTimer: () => void;
+  onResetTimer: () => void;
+  onOpenBreakGame: () => void;
 }
 
-type LiveViewTab = 'grid' | 'live' | 'archive';
+type LiveViewTab = 'grid' | 'live';
+type CameraMode = 'face' | 'desk';
 
-const POMODORO_ALARM_IMAGE = require('../../assets/pomodoro-alarm.png');
+const GRID_COLUMNS = 4;
+const PARTICIPANTS_PER_PAGE = 16;
 
 export function LiveRoomScreen({
   room,
@@ -68,18 +87,30 @@ export function LiveRoomScreen({
   onLeaveRoom,
   onSendLiveMessage,
   onToggleLiveVote,
-  onSessionComplete,
+  onSubmitLiveAnswer,
+  onVoteLiveAnswer,
+  onDismissLiveAnswer,
   onChangeStudyMode,
+  onUpdateGoal,
   onCompletePrivateHelp,
   onUpdateAmbientMixer,
+  focusMinutes,
+  secondsLeft,
+  breakSecondsLeft,
+  isRunning,
+  isAlarmFinished,
+  isBreakOverlayActive,
+  onSetFocusMinutes,
+  onToggleTimer,
+  onResetTimer,
+  onOpenBreakGame,
 }: LiveRoomScreenProps) {
-  const { width } = useWindowDimensions();
+  const { width, height } = useWindowDimensions();
   const isFocused = useIsFocused();
   const navigation = useNavigation();
-  const numColumns = width >= 768 ? 4 : 2;
-  const initialFocusMinutes = room?.focusMinutes ?? profile.defaultFocusMinutes;
 
   const audioEngineRef = useRef<AmbientAudioEngine | null>(null);
+  const pagerRef = useRef<FlatList<StudyParticipant[]> | null>(null);
   const ambientMixerRef = useRef<AmbientMixerState>(profile.ambientMixer);
   useEffect(() => {
     ambientMixerRef.current = profile.ambientMixer;
@@ -88,31 +119,67 @@ export function LiveRoomScreen({
   const [activeView, setActiveView] = useState<LiveViewTab>('grid');
   const [emptyRoomDemo, setEmptyRoomDemo] = useState<boolean>(false);
   const [isSeated, setIsSeated] = useState<boolean>(true);
-  const [activeChatPeer, setActiveChatPeer] = useState<StudyParticipant | null>(null);
+  const [currentPage, setCurrentPage] = useState<number>(0);
+  const [activeChatPeer, setActiveChatPeer] = useState<StudyParticipant | null>(
+    null
+  );
   const [mixerExpanded, setMixerExpanded] = useState<boolean>(false);
-  const [breakModalVisible, setBreakModalVisible] = useState<boolean>(false);
-  const [receiptVisible, setReceiptVisible] = useState<boolean>(false);
+  const [clockSettingsOpen, setClockSettingsOpen] = useState<boolean>(false);
+  const [screenShareNotice, setScreenShareNotice] = useState<string>('');
+  const screenNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
+
+  // Camera confirmation gate (OFF -> ON requires confirmation; Face <-> Desk seamless when ON)
+  const [cameraConfirmed, setCameraConfirmed] = useState<boolean>(false);
+  const [pendingCameraMode, setPendingCameraMode] = useState<CameraMode | null>(
+    null
+  );
 
   const [messageText, setMessageText] = useState<string>('');
-  const [messageKind, setMessageKind] = useState<LiveMessageKind>('question');
   const [inputError, setInputError] = useState<string>('');
-  const [sessionNotice, setSessionNotice] = useState<string>('');
-  const [secondsLeft, setSecondsLeft] = useState<number>(initialFocusMinutes * 60);
-  const [isRunning, setIsRunning] = useState<boolean>(false);
-  const [isAlarmRinging, setIsAlarmRinging] = useState<boolean>(false);
 
-  const mascotRotateAnim = useRef(new Animated.Value(0)).current;
-  const mascotJumpAnim = useRef(new Animated.Value(0)).current;
+  // Room-scoped live question answering & 30s answer voting countdown
+  const [isAnsweringLiveQ, setIsAnsweringLiveQ] = useState<boolean>(false);
+  const [liveAnswerDraft, setLiveAnswerDraft] = useState<string>('');
+  const [liveAnswerError, setLiveAnswerError] = useState<string>('');
+  const [voteSecondsLeft, setVoteSecondsLeft] = useState<number>(0);
+  const [stageBounds, setStageBounds] = useState<ContainerBounds>({
+    width: Math.max(240, width - 16),
+    height: Math.max(260, height - 180),
+  });
+
+  const handleMainStageLayout = (event: LayoutChangeEvent) => {
+    const { width: w, height: h } = event.nativeEvent.layout;
+    if (w <= 0 || h <= 0) return;
+    setStageBounds((prev) =>
+      prev.width === w && prev.height === h ? prev : { width: w, height: h }
+    );
+  };
+
+  // Close local sub-modals if a full-screen break/alarm overlay takes over
+  useEffect(() => {
+    if (isBreakOverlayActive) {
+      setActiveChatPeer(null);
+      setPendingCameraMode(null);
+      setClockSettingsOpen(false);
+    }
+  }, [isBreakOverlayActive]);
 
   // Immediately dispose audio and force camera OFF on navigation blur or back-swipe removal
   useEffect(() => {
     const cleanupRoomMedia = () => {
       audioEngineRef.current?.dispose();
       audioEngineRef.current = null;
+      setCameraConfirmed(false);
+      setPendingCameraMode(null);
       onChangeStudyMode('avatar');
     };
     const unsubBlur = navigation.addListener('blur', cleanupRoomMedia);
-    const unsubBeforeRemove = navigation.addListener('beforeRemove', cleanupRoomMedia);
+    const unsubBeforeRemove = navigation.addListener(
+      'beforeRemove',
+      cleanupRoomMedia
+    );
     return () => {
       unsubBlur();
       unsubBeforeRemove();
@@ -121,17 +188,40 @@ export function LiveRoomScreen({
 
   // Keep camera OFF on initial room entry and whenever losing focus or unmounting
   useEffect(() => {
+    setCameraConfirmed(false);
+    setPendingCameraMode(null);
     onChangeStudyMode('avatar');
     return () => {
+      setCameraConfirmed(false);
+      setPendingCameraMode(null);
       onChangeStudyMode('avatar');
     };
   }, [room?.id, onChangeStudyMode]);
 
   useEffect(() => {
     if (!isFocused) {
+      setCameraConfirmed(false);
+      setPendingCameraMode(null);
+      setScreenShareNotice('');
       onChangeStudyMode('avatar');
     }
   }, [isFocused, onChangeStudyMode]);
+
+  useEffect(() => {
+    return () => {
+      if (screenNoticeTimerRef.current !== null) {
+        clearTimeout(screenNoticeTimerRef.current);
+        screenNoticeTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (profile.studyMode === 'avatar' || profile.studyMode === 'screen') {
+      setCameraConfirmed(false);
+      setPendingCameraMode(null);
+    }
+  }, [profile.studyMode]);
 
   // Only run ambient audio while inside a live room and focused; dispose immediately on blur/unmount
   useEffect(() => {
@@ -160,145 +250,58 @@ export function LiveRoomScreen({
   }, [profile.ambientMixer, isFocused, room?.id]);
 
   useEffect(() => {
-    setSecondsLeft(initialFocusMinutes * 60);
-    setIsRunning(false);
-    setIsAlarmRinging(false);
-    setSessionNotice('');
     setEmptyRoomDemo(false);
     setIsSeated(true);
-  }, [room?.id, initialFocusMinutes]);
+    setCurrentPage(0);
+    setActiveView('grid');
+    setMixerExpanded(false);
+    setClockSettingsOpen(false);
+    setScreenShareNotice('');
+    setIsAnsweringLiveQ(false);
+    setLiveAnswerDraft('');
+    setLiveAnswerError('');
+  }, [room?.id]);
+
+  // Reset answer composer whenever the active live question is cleared or changes
+  const activeLiveQuestionId = room?.activeLiveQuestion?.id ?? null;
+  useEffect(() => {
+    if (!activeLiveQuestionId) {
+      setIsAnsweringLiveQ(false);
+      setLiveAnswerDraft('');
+      setLiveAnswerError('');
+    }
+  }, [activeLiveQuestionId]);
+
+  // Tick local 30-second countdown display for this room's active live answer
+  const activeAnswerVoteEnd =
+    room?.activeLiveAnswer?.status === 'voting'
+      ? room.activeLiveAnswer.voteEndsAtMs
+      : null;
 
   useEffect(() => {
-    if (!isRunning) return;
-    const id = setInterval(() => {
-      setSecondsLeft((prev) => Math.max(0, prev - 1));
-    }, 1000);
-    return () => clearInterval(id);
-  }, [isRunning]);
-
-  useEffect(() => {
-    if (!isRunning || secondsLeft > 0) return;
-    setIsRunning(false);
-    setIsAlarmRinging(true);
-    onSessionComplete(initialFocusMinutes);
-    setSessionNotice('Time is up! +5 pts added to your profile.');
-  }, [isRunning, secondsLeft, initialFocusMinutes, onSessionComplete]);
-
-  // Animate the alarm clock mascot:
-  // - Finished alarm (isAlarmRinging): rapid left-right shake (-18deg..18deg) + hopping bounce
-  // - Running (isRunning): smooth left-right rock (-10deg..10deg), translateY = 0
-  // - Paused/Idle: reset cleanly to 0deg and translateY = 0
-  useEffect(() => {
-    mascotRotateAnim.stopAnimation();
-    mascotJumpAnim.stopAnimation();
-
-    if (isAlarmRinging) {
-      mascotRotateAnim.setValue(0);
-      mascotJumpAnim.setValue(0);
-
-      const shakeLoop = Animated.loop(
-        Animated.sequence([
-          Animated.timing(mascotRotateAnim, {
-            toValue: 18,
-            duration: 65,
-            easing: Easing.linear,
-            useNativeDriver: true,
-          }),
-          Animated.timing(mascotRotateAnim, {
-            toValue: -18,
-            duration: 130,
-            easing: Easing.linear,
-            useNativeDriver: true,
-          }),
-          Animated.timing(mascotRotateAnim, {
-            toValue: 0,
-            duration: 65,
-            easing: Easing.linear,
-            useNativeDriver: true,
-          }),
-        ])
-      );
-
-      const hopLoop = Animated.loop(
-        Animated.sequence([
-          Animated.timing(mascotJumpAnim, {
-            toValue: -10,
-            duration: 110,
-            easing: Easing.out(Easing.quad),
-            useNativeDriver: true,
-          }),
-          Animated.timing(mascotJumpAnim, {
-            toValue: 0,
-            duration: 110,
-            easing: Easing.in(Easing.quad),
-            useNativeDriver: true,
-          }),
-          Animated.timing(mascotJumpAnim, {
-            toValue: -6,
-            duration: 90,
-            easing: Easing.out(Easing.quad),
-            useNativeDriver: true,
-          }),
-          Animated.timing(mascotJumpAnim, {
-            toValue: 0,
-            duration: 90,
-            easing: Easing.in(Easing.quad),
-            useNativeDriver: true,
-          }),
-        ])
-      );
-
-      const combined = Animated.parallel([shakeLoop, hopLoop]);
-      combined.start();
-
-      return () => {
-        combined.stop();
-      };
+    if (activeAnswerVoteEnd === null) {
+      setVoteSecondsLeft(0);
+      return;
     }
 
-    if (isRunning) {
-      mascotJumpAnim.setValue(0);
-      mascotRotateAnim.setValue(0);
-
-      const wiggleLoop = Animated.loop(
-        Animated.sequence([
-          Animated.timing(mascotRotateAnim, {
-            toValue: 10,
-            duration: 280,
-            easing: Easing.inOut(Easing.sin),
-            useNativeDriver: true,
-          }),
-          Animated.timing(mascotRotateAnim, {
-            toValue: -10,
-            duration: 560,
-            easing: Easing.inOut(Easing.sin),
-            useNativeDriver: true,
-          }),
-          Animated.timing(mascotRotateAnim, {
-            toValue: 0,
-            duration: 280,
-            easing: Easing.inOut(Easing.sin),
-            useNativeDriver: true,
-          }),
-        ])
+    const updateRemaining = () => {
+      const remaining = Math.max(
+        0,
+        Math.ceil((activeAnswerVoteEnd - Date.now()) / 1000)
       );
-      wiggleLoop.start();
+      setVoteSecondsLeft(remaining);
+    };
 
-      return () => {
-        wiggleLoop.stop();
-      };
-    }
+    updateRemaining();
+    const intervalId = setInterval(updateRemaining, 250);
+    return () => clearInterval(intervalId);
+  }, [activeAnswerVoteEnd]);
 
-    mascotRotateAnim.setValue(0);
-    mascotJumpAnim.setValue(0);
-    return undefined;
-  }, [isRunning, isAlarmRinging, mascotRotateAnim, mascotJumpAnim]);
-
-  useEffect(() => {
-    if (!sessionNotice) return;
-    const timer = setTimeout(() => setSessionNotice(''), 3200);
-    return () => clearTimeout(timer);
-  }, [sessionNotice]);
+  const isOnBreak = breakSecondsLeft !== null && breakSecondsLeft > 0;
+  const isAlarmRinging = isAlarmFinished || secondsLeft === 0;
+  const isCameraOn =
+    cameraConfirmed &&
+    (profile.studyMode === 'face' || profile.studyMode === 'desk');
 
   const progression = useMemo(
     () => getProgressionInfo(profile.points),
@@ -323,55 +326,69 @@ export function LiveRoomScreen({
     [profile, progression.level]
   );
 
-  const { displayedParticipants, topContributorIds, showingCompanionBots } = useMemo(() => {
-    const rawPeers = emptyRoomDemo ? [] : room?.participants ?? [];
-    const noPeersActive = rawPeers.length === 0;
+  const { displayedParticipants, topContributorIds, showingCompanionBots } =
+    useMemo(() => {
+      const rawPeers = emptyRoomDemo ? [] : room?.participants ?? [];
+      const noPeersActive = rawPeers.length === 0;
 
-    if (noPeersActive) {
-      const botsWithOptionalUser = isSeated
-        ? [currentUserParticipant, ...STUDY_COMPANION_BOTS]
-        : STUDY_COMPANION_BOTS;
+      if (noPeersActive) {
+        const botsWithOptionalUser = isSeated
+          ? [currentUserParticipant, ...STUDY_COMPANION_BOTS]
+          : STUDY_COMPANION_BOTS;
+        return {
+          displayedParticipants: botsWithOptionalUser,
+          topContributorIds: new Set<string>(),
+          showingCompanionBots: true,
+        };
+      }
+
+      const sortedPeers = sortParticipantsByWeeklyContribution(rawPeers);
+      const topIds = new Set(
+        sortedPeers
+          .filter((peer) => peer.weeklyHelpfulCount > 0)
+          .slice(0, 2)
+          .map((peer) => peer.id)
+      );
+
+      // Keep top weekly contributor at slot #1, seat user right near the top when seated
+      const list = isSeated
+        ? [sortedPeers[0], currentUserParticipant, ...sortedPeers.slice(1)]
+        : sortedPeers;
+
       return {
-        displayedParticipants: botsWithOptionalUser,
-        topContributorIds: new Set<string>(),
-        showingCompanionBots: true,
+        displayedParticipants: list,
+        topContributorIds: topIds,
+        showingCompanionBots: false,
       };
+    }, [room?.participants, emptyRoomDemo, isSeated, currentUserParticipant]);
+
+  // Split participants into pages of 16 (4x4 per slide)
+  const participantPages = useMemo<StudyParticipant[][]>(() => {
+    if (displayedParticipants.length === 0) return [[]];
+    const pages: StudyParticipant[][] = [];
+    for (
+      let i = 0;
+      i < displayedParticipants.length;
+      i += PARTICIPANTS_PER_PAGE
+    ) {
+      pages.push(displayedParticipants.slice(i, i + PARTICIPANTS_PER_PAGE));
     }
+    return pages;
+  }, [displayedParticipants]);
 
-    const sortedPeers = sortParticipantsByWeeklyContribution(rawPeers);
-    const topIds = new Set(
-      sortedPeers
-        .filter((peer) => peer.weeklyHelpfulCount > 0)
-        .slice(0, 2)
-        .map((peer) => peer.id)
-    );
+  // Clamp currentPage when participant list shrinks (e.g., toggling Quiet Room Demo)
+  useEffect(() => {
+    if (currentPage >= participantPages.length) {
+      setCurrentPage(Math.max(0, participantPages.length - 1));
+    }
+  }, [currentPage, participantPages.length]);
 
-    // Keep top weekly contributor at slot #1, seat user right near the top when seated
-    const list = isSeated
-      ? [sortedPeers[0], currentUserParticipant, ...sortedPeers.slice(1)]
-      : sortedPeers;
-
-    return {
-      displayedParticipants: list,
-      topContributorIds: topIds,
-      showingCompanionBots: false,
-    };
-  }, [room?.participants, emptyRoomDemo, isSeated, currentUserParticipant]);
-
-  const sortedLiveMessages = useMemo<LiveMessageItem[]>(() => {
+  // Keep all public live questions ordered newest-first
+  const newestLiveMessages = useMemo<LiveMessageItem[]>(() => {
     if (!room) return [];
-    return [...room.messages].sort((a, b) => {
-      if (b.votes !== a.votes) return b.votes - a.votes;
-      if (a.kind !== b.kind) return a.kind === 'question' ? -1 : 1;
-      return 0;
-    });
-  }, [room]);
-
-  const verifiedMessages = useMemo<LiveMessageItem[]>(() => {
-    if (!room) return [];
-    return room.messages
-      .filter((msg) => msg.verified || msg.votes >= VERIFIED_VOTE_THRESHOLD)
-      .sort((a, b) => b.votes - a.votes);
+    return [...room.messages]
+      .filter((msg) => msg.kind === 'question')
+      .sort((a, b) => (b.createdAtMs ?? 0) - (a.createdAtMs ?? 0));
   }, [room]);
 
   if (!room) {
@@ -387,122 +404,303 @@ export function LiveRoomScreen({
     );
   }
 
+  const pageWidth = Math.min(Math.max(300, width - 16), 680);
+
   const handleLeave = () => {
     audioEngineRef.current?.dispose();
     audioEngineRef.current = null;
+    setCameraConfirmed(false);
+    setPendingCameraMode(null);
     onChangeStudyMode('avatar');
     onLeaveRoom(room.id);
+  };
+
+  const handleToggleCameraTool = (targetMode: CameraMode) => {
+    setMixerExpanded(false);
+
+    // Tapping the currently active camera tool turns it OFF back to avatar
+    if (isCameraOn && profile.studyMode === targetMode) {
+      setCameraConfirmed(false);
+      setPendingCameraMode(null);
+      onChangeStudyMode('avatar');
+      return;
+    }
+
+    // If a camera is already ON, switch seamlessly between Camera (face) <-> Desk without re-prompting
+    if (isCameraOn) {
+      setPendingCameraMode(null);
+      onChangeStudyMode(targetMode);
+      return;
+    }
+
+    // Turning camera ON from OFF ('avatar' or 'screen') always shows confirmation gate first
+    setPendingCameraMode(targetMode);
+  };
+
+  const showTemporaryScreenNotice = (message: string) => {
+    if (screenNoticeTimerRef.current !== null) {
+      clearTimeout(screenNoticeTimerRef.current);
+      screenNoticeTimerRef.current = null;
+    }
+    setScreenShareNotice(message);
+    screenNoticeTimerRef.current = setTimeout(() => {
+      screenNoticeTimerRef.current = null;
+      setScreenShareNotice('');
+    }, 2600);
+  };
+
+  const handleToggleScreenShare = () => {
+    setMixerExpanded(false);
+    setPendingCameraMode(null);
+    setCameraConfirmed(false);
+    if (profile.studyMode === 'screen') {
+      onChangeStudyMode('avatar');
+      showTemporaryScreenNotice('Screen sharing stopped.');
+      return;
+    }
+    onChangeStudyMode('screen');
+    showTemporaryScreenNotice('Screen sharing started · Live in this room');
+  };
+
+  const handleConfirmCameraOn = () => {
+    if (!pendingCameraMode) return;
+    const targetMode = pendingCameraMode;
+    setPendingCameraMode(null);
+    setCameraConfirmed(true);
+    onChangeStudyMode(targetMode);
+  };
+
+  const handleCancelCameraPrompt = () => {
+    setPendingCameraMode(null);
+  };
+
+  const handleGoToPage = (nextIndex: number) => {
+    const clamped = Math.max(
+      0,
+      Math.min(participantPages.length - 1, nextIndex)
+    );
+    setCurrentPage(clamped);
+    pagerRef.current?.scrollToIndex({ index: clamped, animated: true });
+  };
+
+  const handlePagerScrollEnd = (
+    event: NativeSyntheticEvent<NativeScrollEvent>
+  ) => {
+    const offsetX = event.nativeEvent.contentOffset.x;
+    const nextIndex = Math.round(offsetX / pageWidth);
+    if (nextIndex >= 0 && nextIndex < participantPages.length) {
+      setCurrentPage(nextIndex);
+    }
   };
 
   const handleSend = () => {
     const clean = messageText.trim();
     if (!clean) {
-      setInputError(
-        messageKind === 'question'
-          ? 'Please enter a question before sending.'
-          : 'Please write a chat message before sending.'
-      );
+      setInputError('Please enter a question before sending.');
       return;
     }
 
-    onSendLiveMessage(room.id, clean, messageKind);
+    onSendLiveMessage(room.id, clean, 'question');
     setMessageText('');
     setInputError('');
+    setActiveView('grid');
   };
 
-  const handleCompleteSession = () => {
-    setIsRunning(false);
-    setIsAlarmRinging(false);
-    setSecondsLeft(room.focusMinutes * 60);
-    onSessionComplete(room.focusMinutes);
-    setSessionNotice('Session completed! +5 pts and +1 completed session.');
-  };
-
-  const handleDismissAlarm = () => {
-    setIsAlarmRinging(false);
-    setIsRunning(false);
-    setSecondsLeft(room.focusMinutes * 60);
-  };
-
-  const handleToggleTimer = () => {
-    if (isAlarmRinging || secondsLeft === 0) {
-      setIsAlarmRinging(false);
-      setSecondsLeft(room.focusMinutes * 60);
-      setIsRunning(true);
+  const handleSubmitAnswerBubble = () => {
+    const activeQ = room.activeLiveQuestion;
+    if (!activeQ) return;
+    const clean = liveAnswerDraft.trim();
+    if (!clean) {
+      setLiveAnswerError('Please write an answer before submitting.');
       return;
     }
-    setIsRunning((prev) => !prev);
+    onSubmitLiveAnswer(room.id, activeQ.id, clean);
+    setIsAnsweringLiveQ(false);
+    setLiveAnswerDraft('');
+    setLiveAnswerError('');
   };
 
-  const mascotRotateDeg = mascotRotateAnim.interpolate({
-    inputRange: [-18, 18],
-    outputRange: ['-18deg', '18deg'],
-  });
-
-  const mins = Math.floor(secondsLeft / 60);
-  const secs = secondsLeft % 60;
-  const formattedTimer = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-  const liveCountDisplay = emptyRoomDemo ? (isSeated ? 1 : 0) : room.activeStudents;
+  const displaySeconds =
+    isOnBreak && breakSecondsLeft !== null ? breakSecondsLeft : secondsLeft;
   const ambientSummary = getAmbientSummary(profile.ambientMixer);
   const hasAmbientOn = ambientSummary !== 'Off';
+  const isChatOpen = activeView !== 'grid';
+  const isFaceActive = isCameraOn && profile.studyMode === 'face';
+  const isDeskActive = isCameraOn && profile.studyMode === 'desk';
+  const isScreenSharing = profile.studyMode === 'screen';
+
+  const renderGridPage = (pageParticipants: StudyParticipant[]) => {
+    const rows: StudyParticipant[][] = [];
+    for (let i = 0; i < pageParticipants.length; i += GRID_COLUMNS) {
+      rows.push(pageParticipants.slice(i, i + GRID_COLUMNS));
+    }
+
+    return (
+      <ScrollView
+        style={{ width: pageWidth }}
+        contentContainerStyle={styles.gridPageContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {rows.map((rowItems, rowIndex) => {
+          const emptySlots = Math.max(0, GRID_COLUMNS - rowItems.length);
+          return (
+            <View key={`row-${rowIndex}`} style={styles.gridRow}>
+              {rowItems.map((item) => {
+                const cooldownMs = getPeerCooldownRemainingMs(
+                  profile.privateChatCooldowns,
+                  item.id
+                );
+                return (
+                  <View key={item.id} style={styles.gridCell}>
+                    <StudyParticipantCard
+                      participant={item}
+                      roomTitle={room.title}
+                      compact
+                      isScreenFocused={isFocused}
+                      isTopContributor={topContributorIds.has(item.id)}
+                      isOnCooldown={cooldownMs > 0}
+                      isCameraConfirmed={
+                        item.isCurrentUser ? cameraConfirmed : undefined
+                      }
+                      onAskPrivateChat={(peer) => setActiveChatPeer(peer)}
+                      onUpdateGoal={
+                        item.isCurrentUser ? onUpdateGoal : undefined
+                      }
+                    />
+                  </View>
+                );
+              })}
+              {Array.from({ length: emptySlots }).map((_, idx) => (
+                <View key={`spacer-${rowIndex}-${idx}`} style={styles.gridCell} />
+              ))}
+            </View>
+          );
+        })}
+      </ScrollView>
+    );
+  };
 
   const renderMessageCard = ({ item }: { item: LiveMessageItem }) => {
-    const isVerified = item.verified || item.votes >= VERIFIED_VOTE_THRESHOLD;
-    const votesNeeded = Math.max(0, VERIFIED_VOTE_THRESHOLD - item.votes);
+    const isDiscarded = item.status === 'discarded';
+    const isAccepted =
+      !isDiscarded &&
+      (item.status === 'accepted' ||
+        item.verified ||
+        item.votes >= VERIFIED_VOTE_THRESHOLD);
+    const isVoteLocked = isAccepted && item.hasVoted;
 
     return (
       <SectionCard
-        style={isVerified ? [styles.msgCard, styles.verifiedCard] : styles.msgCard}
+        style={[
+          styles.msgCard,
+          isAccepted && styles.verifiedCard,
+          isDiscarded && styles.discardedCard,
+        ]}
       >
         <View style={styles.msgHeader}>
           <View style={styles.msgMetaLeft}>
-            <Text style={styles.senderText}>{item.sender}</Text>
-            <View
+            <Text
               style={[
-                styles.kindBadge,
-                item.kind === 'question' ? styles.kindQuestion : styles.kindChat,
+                styles.senderText,
+                isDiscarded && styles.discardedMutedText,
               ]}
             >
-              <Text
-                style={[
-                  styles.kindBadgeText,
-                  item.kind === 'question'
-                    ? styles.kindQuestionText
-                    : styles.kindChatText,
-                ]}
-              >
-                {item.kind === 'question' ? 'Question' : 'Chat'}
-              </Text>
-            </View>
-            {isVerified ? (
+              {item.sender}
+            </Text>
+            {isAccepted ? (
               <View style={styles.verifiedBadge}>
-                <Text style={styles.verifiedBadgeText}>✓ Verified</Text>
+                <Text style={styles.verifiedBadgeText}>✓ Accepted</Text>
+              </View>
+            ) : isDiscarded ? (
+              <View style={styles.discardedBadge}>
+                <Text style={styles.discardedBadgeText}>Downvoted</Text>
               </View>
             ) : null}
           </View>
           <Text style={styles.timeText}>{item.createdAt}</Text>
         </View>
 
-        <Text style={styles.msgBody}>{item.text}</Text>
+        <Text
+          style={[styles.msgBody, isDiscarded && styles.discardedMutedText]}
+        >
+          {item.text}
+        </Text>
+
+        {item.answerText ? (
+          <View
+            style={[
+              styles.answerBoxInCard,
+              isDiscarded && styles.answerBoxDiscarded,
+            ]}
+          >
+            <Text
+              style={[
+                styles.answerAuthorText,
+                isDiscarded && styles.discardedMutedText,
+              ]}
+            >
+              Answer · {item.answererName ?? 'Peer'}
+            </Text>
+            <Text
+              style={[
+                styles.answerBodyText,
+                isDiscarded && styles.discardedMutedText,
+              ]}
+            >
+              {item.answerText}
+            </Text>
+          </View>
+        ) : null}
 
         <View style={styles.msgFooter}>
-          <Text style={styles.verifyHint}>
-            {isVerified
-              ? 'Saved in Verified Archive'
-              : `${votesNeeded} more ${votesNeeded === 1 ? 'vote' : 'votes'} to verify`}
-          </Text>
-          <Pressable
-            style={[styles.voteBtn, item.hasVoted && styles.voteBtnActive]}
-            onPress={() => onToggleLiveVote(room.id, item.id)}
+          <Text
+            style={[
+              styles.verifyHint,
+              isDiscarded && styles.discardedMutedText,
+            ]}
           >
-            <Text style={[styles.voteText, item.hasVoted && styles.voteTextActive]}>
-              ▲ {item.hasVoted ? 'Voted' : 'Upvote'} ({item.votes})
+            {item.resolutionNote ??
+              (isDiscarded
+                ? 'Downvoted · Discarded (+0 pts)'
+                : isAccepted
+                  ? 'Accepted · Archived in Peer Q&A'
+                  : 'Open live question')}
+          </Text>
+          {!isDiscarded ? (
+            <Pressable
+              style={[
+                styles.voteBtn,
+                item.hasVoted && styles.voteBtnActive,
+                isVoteLocked && styles.voteBtnLocked,
+              ]}
+              onPress={() => onToggleLiveVote(room.id, item.id)}
+              disabled={isVoteLocked}
+            >
+              <Text
+                style={[
+                  styles.voteText,
+                  item.hasVoted && styles.voteTextActive,
+                  isVoteLocked && styles.voteTextLocked,
+                ]}
+              >
+                {isVoteLocked
+                  ? `✓ Accepted (${item.votes})`
+                  : `▲ ${item.hasVoted ? 'Upvoted' : 'Upvote'} (${item.votes})`}
+              </Text>
+            </Pressable>
+          ) : (
+            <Text style={styles.discardedTally}>
+              ▲ {item.upVotes ?? 0} · ▼ {item.downVotes ?? 0}
             </Text>
-          </Pressable>
+          )}
         </View>
       </SectionCard>
     );
   };
+
+  const hasFloatingLiveBubble = Boolean(
+    room.activeLiveQuestion || room.activeLiveAnswer
+  );
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -511,430 +709,655 @@ export function LiveRoomScreen({
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <View style={styles.container}>
-          {/* Top Bar */}
-          <View style={styles.topBar}>
-            <Pressable
-              style={styles.leaveBtn}
-              onPress={handleLeave}
-            >
-              <Text style={styles.leaveBtnText}>← Leave Live</Text>
+          {/* Minimal Top Header: Leave, Room Title, Rank & Level (no points, no participant count) */}
+          <View style={styles.minimalTopBar}>
+            <Pressable style={styles.leaveBtn} onPress={handleLeave}>
+              <Text style={styles.leaveBtnText}>← Leave</Text>
             </Pressable>
-            <View style={styles.liveBadge}>
-              <Text style={styles.liveDot}>● LIVE</Text>
-              <Text style={styles.liveCount}>· {liveCountDisplay} studying</Text>
+
+            <View style={styles.topTitleBlock}>
+              <Text style={styles.roomTitle} numberOfLines={1}>
+                {room.title}
+              </Text>
+              <Text style={styles.roomSubMeta} numberOfLines={1}>
+                ● LIVE · {room.category}
+              </Text>
+            </View>
+
+            <View style={styles.rankBadge}>
+              <Text style={styles.rankBadgeText} numberOfLines={1}>
+                {progression.rankTitle} Lv.{progression.level}
+              </Text>
             </View>
           </View>
 
-          {/* Compact Room Header */}
-          <SectionCard style={styles.liveHeaderCard}>
-            <View style={styles.headerMetaRow}>
-              <Text style={styles.categoryText}>{room.category.toUpperCase()}</Text>
-              <Text style={styles.sessionStatsText}>
-                {progression.rankTitle} Lv.{progression.level} · {profile.points} pts
-              </Text>
-            </View>
-            <Text style={styles.roomTitle} numberOfLines={1}>
-              {room.title}
-            </Text>
-
-            {sessionNotice ? (
-              <View style={styles.noticeBanner}>
-                <Text style={styles.noticeBannerText}>✓ {sessionNotice}</Text>
-              </View>
-            ) : null}
-          </SectionCard>
-
-          {/* Co-Working Extras Dock: Ambient Mixer, Take a Break, Study Receipt */}
-          <View style={styles.extrasRow}>
-            <Pressable
+          {/* Main Content Stage: Compact 4x4 Participant Grid OR Chat & Q&A */}
+          <View style={styles.mainStage} onLayout={handleMainStageLayout}>
+            <View
               style={[
-                styles.extraBtn,
-                (mixerExpanded || hasAmbientOn) && styles.extraBtnActive,
+                styles.flex,
+                hasFloatingLiveBubble && styles.blurredStageContent,
               ]}
-              onPress={() => setMixerExpanded((prev) => !prev)}
             >
-              <Text
-                style={[
-                  styles.extraBtnText,
-                  (mixerExpanded || hasAmbientOn) && styles.extraBtnTextActive,
-                ]}
-                numberOfLines={1}
-              >
-                🎧 {hasAmbientOn ? 'Ambient ON' : 'Ambient'}
-              </Text>
-            </Pressable>
-
-            <Pressable
-              style={styles.extraBtn}
-              onPress={() => setBreakModalVisible(true)}
-            >
-              <Text style={styles.extraBtnText} numberOfLines={1}>
-                🧠 Take a Break
-              </Text>
-            </Pressable>
-
-            <Pressable
-              style={styles.extraBtnReceipt}
-              onPress={() => setReceiptVisible(true)}
-            >
-              <Text style={styles.extraBtnReceiptText} numberOfLines={1}>
-                🧾 Receipt
-              </Text>
-            </Pressable>
-          </View>
-
-          <AmbientMixerBar
-            mixer={profile.ambientMixer}
-            expanded={mixerExpanded}
-            onToggleExpand={() => setMixerExpanded((prev) => !prev)}
-            onChange={onUpdateAmbientMixer}
-          />
-
-          {/* 3-Tab Segmented Switcher */}
-          <View style={styles.segmentedBar}>
-            <Pressable
-              style={[
-                styles.segmentTab,
-                activeView === 'grid' && styles.segmentTabActive,
-              ]}
-              onPress={() => setActiveView('grid')}
-            >
-              <Text
-                style={[
-                  styles.segmentTabText,
-                  activeView === 'grid' && styles.segmentTabTextActive,
-                ]}
-                numberOfLines={1}
-              >
-                Study Grid
-              </Text>
-            </Pressable>
-
-            <Pressable
-              style={[
-                styles.segmentTab,
-                activeView === 'live' && styles.segmentTabActive,
-              ]}
-              onPress={() => setActiveView('live')}
-            >
-              <Text
-                style={[
-                  styles.segmentTabText,
-                  activeView === 'live' && styles.segmentTabTextActive,
-                ]}
-                numberOfLines={1}
-              >
-                Chat & Q&A ({room.messages.length})
-              </Text>
-            </Pressable>
-
-            <Pressable
-              style={[
-                styles.segmentTab,
-                activeView === 'archive' && styles.segmentTabArchiveActive,
-              ]}
-              onPress={() => setActiveView('archive')}
-            >
-              <Text
-                style={[
-                  styles.segmentTabText,
-                  activeView === 'archive' && styles.segmentTabTextActive,
-                ]}
-                numberOfLines={1}
-              >
-                Archive ({verifiedMessages.length})
-              </Text>
-            </Pressable>
-          </View>
-
-          {/* View 0: Co-Working Participant Grid + Quiet/Empty Room Companion Mode */}
-          {activeView === 'grid' ? (
-            <View style={styles.flex}>
-              <View style={styles.gridToolbar}>
-                <Pressable
-                  style={[
-                    styles.toolbarPill,
-                    emptyRoomDemo && styles.toolbarPillActive,
-                  ]}
-                  onPress={() => setEmptyRoomDemo((prev) => !prev)}
-                >
-                  <Text
-                    style={[
-                      styles.toolbarPillText,
-                      emptyRoomDemo && styles.toolbarPillTextActive,
-                    ]}
+              {isScreenSharing ? (
+                <View style={styles.screenShareBanner}>
+                  <Text style={styles.screenShareBannerText} numberOfLines={1}>
+                    ● LIVE SCREEN SHARE · Sharing your screen in {room.title}
+                  </Text>
+                  <Pressable
+                    style={styles.screenShareStopBtn}
+                    onPress={handleToggleScreenShare}
+                    hitSlop={6}
+                    accessibilityRole="button"
+                    accessibilityLabel="Stop sharing screen"
                   >
-                    {emptyRoomDemo
-                      ? '🌙 Quiet Room Demo: ON'
-                      : '🌙 Quiet / Empty Room Demo'}
+                    <Text style={styles.screenShareStopBtnText}>Stop</Text>
+                  </Pressable>
+                </View>
+              ) : screenShareNotice ? (
+                <View style={styles.screenShareStoppedNotice}>
+                  <Text style={styles.screenShareStoppedText} numberOfLines={1}>
+                    {screenShareNotice}
                   </Text>
-                </Pressable>
+                </View>
+              ) : null}
 
-                <Pressable
-                  style={[
-                    styles.seatBtn,
-                    isSeated && styles.seatBtnActive,
-                  ]}
-                  onPress={() => setIsSeated((prev) => !prev)}
-                >
-                  <Text
-                    style={[
-                      styles.seatBtnText,
-                      isSeated && styles.seatBtnTextActive,
-                    ]}
-                  >
-                    {isSeated ? 'Seated ✓' : '+ Sit in Room'}
-                  </Text>
-                </Pressable>
-              </View>
+              {activeView === 'grid' ? (
+                <View style={styles.gridStageCenter}>
+                  {showingCompanionBots ? (
+                    <View style={[styles.botBanner, { width: pageWidth }]}>
+                      <Text style={styles.botBannerTitle}>
+                        Quiet Room Mode · Companion bots at the table
+                      </Text>
+                    </View>
+                  ) : null}
 
-              {showingCompanionBots ? (
-                <View style={styles.botBanner}>
-                  <Text style={styles.botBannerTitle}>
-                    Quiet Room Mode · 5 Study Companion Bots Active
-                  </Text>
-                  <Text style={styles.botBannerSub}>
-                    No other peers are active right now—these 5 friendly bots keep the table cozy while you focus.
-                  </Text>
+                  <View style={[styles.gridFrame, { width: pageWidth }]}>
+                    {participantPages.length === 1 ? (
+                      renderGridPage(participantPages[0])
+                    ) : (
+                      <>
+                        <FlatList
+                          ref={pagerRef}
+                          style={styles.pagerList}
+                          data={participantPages}
+                          extraData={`${profile.studyMode}-${cameraConfirmed}-${isFocused}-${room.title}`}
+                          horizontal
+                          pagingEnabled
+                          initialNumToRender={1}
+                          maxToRenderPerBatch={2}
+                          windowSize={3}
+                          showsHorizontalScrollIndicator={false}
+                          keyExtractor={(_, idx) => `page-${idx}`}
+                          onMomentumScrollEnd={handlePagerScrollEnd}
+                          getItemLayout={(_, index) => ({
+                            length: pageWidth,
+                            offset: pageWidth * index,
+                            index,
+                          })}
+                          renderItem={({ item }) => renderGridPage(item)}
+                        />
+                        <View style={styles.paginationRow}>
+                          <Pressable
+                            style={[
+                              styles.pageArrowBtn,
+                              currentPage === 0 && styles.pageArrowBtnDisabled,
+                            ]}
+                            onPress={() => handleGoToPage(currentPage - 1)}
+                            disabled={currentPage === 0}
+                            accessibilityRole="button"
+                            accessibilityLabel="Previous slide"
+                          >
+                            <Text style={styles.pageArrowText}>‹</Text>
+                          </Pressable>
+
+                          <View style={styles.slideLabelWrap}>
+                            <Text style={styles.slideLabelText}>
+                              Slide {currentPage + 1} / {participantPages.length}
+                            </Text>
+                            <View style={styles.dotsRow}>
+                              {participantPages.map((_, idx) => (
+                                <Pressable
+                                  key={`dot-${idx}`}
+                                  style={[
+                                    styles.pageDot,
+                                    idx === currentPage && styles.pageDotActive,
+                                  ]}
+                                  onPress={() => handleGoToPage(idx)}
+                                  accessibilityRole="button"
+                                  accessibilityLabel={`Go to Slide ${idx + 1}`}
+                                />
+                              ))}
+                            </View>
+                          </View>
+
+                          <Pressable
+                            style={[
+                              styles.pageArrowBtn,
+                              currentPage === participantPages.length - 1 &&
+                              styles.pageArrowBtnDisabled,
+                            ]}
+                            onPress={() => handleGoToPage(currentPage + 1)}
+                            disabled={currentPage === participantPages.length - 1}
+                            accessibilityRole="button"
+                            accessibilityLabel="Next slide"
+                          >
+                            <Text style={styles.pageArrowText}>›</Text>
+                          </Pressable>
+                        </View>
+                      </>
+                    )}
+                  </View>
                 </View>
               ) : (
-                <Text style={styles.listCaption}>
-                  Weekly top contributors appear first · Tap “Ask 1-on-1” on peers with private chat enabled
-                </Text>
-              )}
-
-              <FlatList
-                key={`study-grid-${numColumns}`}
-                data={displayedParticipants}
-                numColumns={numColumns}
-                keyExtractor={(item) => item.id}
-                columnWrapperStyle={styles.gridRow}
-                contentContainerStyle={styles.gridListContent}
-                showsVerticalScrollIndicator={false}
-                renderItem={({ item }) => {
-                  const cooldownMs = getPeerCooldownRemainingMs(
-                    profile.privateChatCooldowns,
-                    item.id
-                  );
-                  return (
-                    <View style={styles.gridCell}>
-                      <StudyParticipantCard
-                        participant={item}
-                        isScreenFocused={isFocused}
-                        isTopContributor={topContributorIds.has(item.id)}
-                        isOnCooldown={cooldownMs > 0}
-                        onAskPrivateChat={(peer) => setActiveChatPeer(peer)}
-                        onSelectStudyMode={
-                          item.isCurrentUser ? onChangeStudyMode : undefined
-                        }
+                <View style={styles.flex}>
+                  <FlatList
+                    data={newestLiveMessages}
+                    keyExtractor={(item) => item.id}
+                    contentContainerStyle={styles.listContent}
+                    showsVerticalScrollIndicator={false}
+                    ListEmptyComponent={
+                      <EmptyStateBox
+                        title="No questions yet"
+                        subtitle="Post a study question below to share it with everyone in this live room."
                       />
+                    }
+                    renderItem={renderMessageCard}
+                  />
+
+                  {/* Direct Question Input Box Only (no Ask / Public Chat toggle) */}
+                  <SectionCard style={styles.inputCard}>
+                    <View style={styles.sendRow}>
+                      <TextInput
+                        style={[
+                          styles.input,
+                          inputError ? styles.inputErrorBorder : null,
+                        ]}
+                        placeholder="Ask a public question..."
+                        placeholderTextColor={COLORS.textMuted}
+                        value={messageText}
+                        onChangeText={(text) => {
+                          setMessageText(text);
+                          if (inputError) setInputError('');
+                        }}
+                        onSubmitEditing={handleSend}
+                        returnKeyType="send"
+                      />
+                      <Pressable style={styles.sendBtn} onPress={handleSend}>
+                        <Text style={styles.sendBtnText}>Send</Text>
+                      </Pressable>
                     </View>
-                  );
-                }}
+
+                    {inputError ? (
+                      <Text style={styles.errorText}>{inputError}</Text>
+                    ) : null}
+                  </SectionCard>
+                </View>
+              )}
+            </View>
+
+            {/* Self-Contained Floating Pomodoro Alarm Clock (1x Tap: Start/Pause, 2x Tap: Settings) */}
+            <DraggablePomodoroClock
+              size={78}
+              zIndex={15}
+              initialCorner="bottom-right"
+              containerBounds={stageBounds}
+              isRunning={isRunning}
+              isAlarmRinging={isAlarmRinging}
+              onSingleTap={isOnBreak ? onOpenBreakGame : onToggleTimer}
+              onDoubleTap={() => {
+                if (isOnBreak) {
+                  onOpenBreakGame();
+                  return;
+                }
+                setMixerExpanded(false);
+                setClockSettingsOpen(true);
+              }}
+              accessibilityLabel={
+                isOnBreak
+                  ? 'Break timer active. Tap to open break mini-game.'
+                  : isRunning
+                    ? 'Pomodoro alarm clock running. Single tap to pause, double tap for timer controls, or drag to move.'
+                    : 'Pomodoro alarm clock paused. Single tap to start, double tap for timer controls, or drag to move.'
+              }
+            />
+
+            {/* Frosted Blur Backdrop + Clean Floating Rounded Cards (no cloud decorations) */}
+            {hasFloatingLiveBubble ? (
+              <View
+                style={[StyleSheet.absoluteFill, styles.floatingOverlayLayer]}
+                pointerEvents="auto"
+              >
+                <View style={styles.floatingCardStack}>
+                  {/* Floating Question Card (room-scoped until answered) */}
+                  {room.activeLiveQuestion ? (
+                    <View style={styles.floatingCard}>
+                      <View style={styles.liveBubbleTopRow}>
+                        <Text
+                          style={styles.liveQuestionEyebrow}
+                          numberOfLines={1}
+                        >
+                          LIVE QUESTION · {room.activeLiveQuestion.askerName}
+                        </Text>
+                        {!isAnsweringLiveQ ? (
+                          <Pressable
+                            style={styles.answerClaimBtn}
+                            onPress={() => {
+                              setIsAnsweringLiveQ(true);
+                              setLiveAnswerError('');
+                            }}
+                          >
+                            <Text style={styles.answerClaimBtnText}>
+                              Answer
+                            </Text>
+                          </Pressable>
+                        ) : (
+                          <Pressable
+                            style={styles.answerCancelBtn}
+                            onPress={() => {
+                              setIsAnsweringLiveQ(false);
+                              setLiveAnswerDraft('');
+                              setLiveAnswerError('');
+                            }}
+                          >
+                            <Text style={styles.answerCancelBtnText}>
+                              Cancel
+                            </Text>
+                          </Pressable>
+                        )}
+                      </View>
+
+                      <Text style={styles.liveQuestionText}>
+                        {room.activeLiveQuestion.text}
+                      </Text>
+
+                      {isAnsweringLiveQ ? (
+                        <View style={styles.liveAnswerComposer}>
+                          <View style={styles.liveAnswerInputRow}>
+                            <TextInput
+                              style={styles.liveAnswerInput}
+                              value={liveAnswerDraft}
+                              onChangeText={(text) => {
+                                setLiveAnswerDraft(text);
+                                if (liveAnswerError) setLiveAnswerError('');
+                              }}
+                              placeholder="Write your answer for the group..."
+                              placeholderTextColor={COLORS.textMuted}
+                              autoFocus
+                              returnKeyType="send"
+                              onSubmitEditing={handleSubmitAnswerBubble}
+                            />
+                            <Pressable
+                              style={styles.liveAnswerSubmitBtn}
+                              onPress={handleSubmitAnswerBubble}
+                            >
+                              <Text style={styles.liveAnswerSubmitText}>
+                                Submit
+                              </Text>
+                            </Pressable>
+                          </View>
+                          {liveAnswerError ? (
+                            <Text style={styles.errorText}>
+                              {liveAnswerError}
+                            </Text>
+                          ) : null}
+                        </View>
+                      ) : (
+                        <Text style={styles.floatingHintText}>
+                          Tap Answer to help your study group with this question.
+                        </Text>
+                      )}
+                    </View>
+                  ) : null}
+
+                  {/* Floating Answer Card + 30-Second Community Vote (unified card style) */}
+                  {room.activeLiveAnswer ? (
+                    <View
+                      style={[
+                        styles.floatingCard,
+                        room.activeLiveAnswer.status === 'accepted' &&
+                        styles.floatingCardAccepted,
+                        room.activeLiveAnswer.status === 'discarded' &&
+                        styles.floatingCardDiscarded,
+                      ]}
+                    >
+                      <View style={styles.liveBubbleTopRow}>
+                        <Text
+                          style={[
+                            styles.liveAnswerEyebrow,
+                            room.activeLiveAnswer.status === 'discarded' &&
+                            styles.discardedMutedText,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          LIVE ANSWER · {room.activeLiveAnswer.answererName}
+                        </Text>
+
+                        {room.activeLiveAnswer.status === 'voting' ? (
+                          <View style={styles.voteTimerPill}>
+                            <Text style={styles.voteTimerText}>
+                              ⏱ {voteSecondsLeft}s
+                            </Text>
+                          </View>
+                        ) : (
+                          <Pressable
+                            style={styles.dismissBubbleBtn}
+                            onPress={() => onDismissLiveAnswer(room.id)}
+                            hitSlop={6}
+                            accessibilityRole="button"
+                            accessibilityLabel="Close answer card"
+                          >
+                            <Text style={styles.dismissBubbleText}>Close</Text>
+                          </Pressable>
+                        )}
+                      </View>
+
+                      <Text
+                        style={styles.liveAnswerQuestionRef}
+                        numberOfLines={2}
+                      >
+                        Question: {room.activeLiveAnswer.questionText}
+                      </Text>
+
+                      <Text
+                        style={[
+                          styles.liveAnswerText,
+                          room.activeLiveAnswer.status === 'discarded' &&
+                          styles.discardedMutedText,
+                        ]}
+                      >
+                        {room.activeLiveAnswer.text}
+                      </Text>
+
+                      {room.activeLiveAnswer.status === 'voting' ? (
+                        <>
+                          <Text style={styles.floatingHintText}>
+                            Vote within {voteSecondsLeft}s — more upvotes accepts this answer (+1 pt).
+                          </Text>
+                          <View style={styles.voteActionRow}>
+                            <Pressable
+                              style={[
+                                styles.voteChoiceBtn,
+                                room.activeLiveAnswer.userVote === 'up' &&
+                                styles.voteChoiceUpActive,
+                              ]}
+                              onPress={() =>
+                                onVoteLiveAnswer(
+                                  room.id,
+                                  room.activeLiveAnswer!.id,
+                                  'up'
+                                )
+                              }
+                            >
+                              <Text
+                                style={[
+                                  styles.voteChoiceText,
+                                  room.activeLiveAnswer.userVote === 'up' &&
+                                  styles.voteChoiceTextActive,
+                                ]}
+                              >
+                                ▲ Upvote ({room.activeLiveAnswer.upVotes})
+                              </Text>
+                            </Pressable>
+
+                            <Pressable
+                              style={[
+                                styles.voteChoiceBtn,
+                                room.activeLiveAnswer.userVote === 'down' &&
+                                styles.voteChoiceDownActive,
+                              ]}
+                              onPress={() =>
+                                onVoteLiveAnswer(
+                                  room.id,
+                                  room.activeLiveAnswer!.id,
+                                  'down'
+                                )
+                              }
+                            >
+                              <Text
+                                style={[
+                                  styles.voteChoiceText,
+                                  room.activeLiveAnswer.userVote === 'down' &&
+                                  styles.voteChoiceTextActive,
+                                ]}
+                              >
+                                ▼ Downvote ({room.activeLiveAnswer.downVotes})
+                              </Text>
+                            </Pressable>
+                          </View>
+                        </>
+                      ) : (
+                        <View
+                          style={[
+                            styles.resolutionBanner,
+                            room.activeLiveAnswer.status === 'discarded' &&
+                            styles.resolutionBannerDiscarded,
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.resolutionText,
+                              room.activeLiveAnswer.status === 'discarded' &&
+                              styles.resolutionTextDiscarded,
+                            ]}
+                          >
+                            {room.activeLiveAnswer.resolutionNote ??
+                              (room.activeLiveAnswer.status === 'accepted'
+                                ? 'Accepted · Ready to use (+1 pt)'
+                                : 'Downvoted · Discarded (+0 pts)')}
+                          </Text>
+                          <Text style={styles.resolutionTally}>
+                            ▲ {room.activeLiveAnswer.upVotes} · ▼{' '}
+                            {room.activeLiveAnswer.downVotes}
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                  ) : null}
+                </View>
+              </View>
+            ) : null}
+          </View>
+
+          {/* Expandable Ambient Sound Mixer right above Bottom Dock */}
+          {mixerExpanded ? (
+            <View style={styles.mixerPopoverWrap}>
+              <AmbientMixerBar
+                mixer={profile.ambientMixer}
+                expanded={mixerExpanded}
+                onToggleExpand={() => setMixerExpanded((prev) => !prev)}
+                onChange={onUpdateAmbientMixer}
               />
             </View>
-          ) : activeView === 'live' ? (
-            /* View 1: Public Chat & Questions */
-            <>
-              <Text style={styles.listCaption}>
-                Sorted by top votes · Posts with {VERIFIED_VOTE_THRESHOLD}+ votes move into Verified Archive
-              </Text>
-              <FlatList
-                data={sortedLiveMessages}
-                keyExtractor={(item) => item.id}
-                contentContainerStyle={styles.listContent}
-                showsVerticalScrollIndicator={false}
-                ListEmptyComponent={
-                  <EmptyStateBox
-                    title="No live messages yet"
-                    subtitle="Post a study question or check-in message below to start collaborating with your room."
-                  />
-                }
-                renderItem={renderMessageCard}
-              />
+          ) : null}
 
-              {/* Message Composer */}
-              <SectionCard style={styles.inputCard}>
-                <View style={styles.modeRow}>
-                  <Pressable
-                    style={[
-                      styles.modeChip,
-                      messageKind === 'question' && styles.modeChipActive,
-                    ]}
-                    onPress={() => {
-                      setMessageKind('question');
-                      if (inputError) setInputError('');
-                    }}
-                  >
-                    <Text
-                      style={[
-                        styles.modeText,
-                        messageKind === 'question' && styles.modeTextActive,
-                      ]}
-                    >
-                      Ask Question
-                    </Text>
-                  </Pressable>
-                  <Pressable
-                    style={[
-                      styles.modeChip,
-                      messageKind === 'chat' && styles.modeChipActive,
-                    ]}
-                    onPress={() => {
-                      setMessageKind('chat');
-                      if (inputError) setInputError('');
-                    }}
-                  >
-                    <Text
-                      style={[
-                        styles.modeText,
-                        messageKind === 'chat' && styles.modeTextActive,
-                      ]}
-                    >
-                      Public Chat
-                    </Text>
-                  </Pressable>
-                </View>
-
-                <View style={styles.sendRow}>
-                  <TextInput
-                    style={[styles.input, inputError ? styles.inputErrorBorder : null]}
-                    placeholder={
-                      messageKind === 'question'
-                        ? 'Ask a study question for peers to upvote...'
-                        : 'Share a quick update in public chat...'
-                    }
-                    placeholderTextColor={COLORS.textMuted}
-                    value={messageText}
-                    onChangeText={(text) => {
-                      setMessageText(text);
-                      if (inputError) setInputError('');
-                    }}
-                    onSubmitEditing={handleSend}
-                    returnKeyType="send"
-                  />
-                  <Pressable style={styles.sendBtn} onPress={handleSend}>
-                    <Text style={styles.sendBtnText}>Send</Text>
-                  </Pressable>
-                </View>
-
-                {inputError ? (
-                  <Text style={styles.errorText}>{inputError}</Text>
-                ) : null}
-              </SectionCard>
-            </>
-          ) : (
-            /* View 2: Verified Archive */
-            <>
-              <Text style={styles.listCaption}>
-                Helpful questions & posts with {VERIFIED_VOTE_THRESHOLD}+ upvotes are preserved here
-              </Text>
-              <FlatList
-                data={verifiedMessages}
-                keyExtractor={(item) => item.id}
-                contentContainerStyle={styles.listContent}
-                showsVerticalScrollIndicator={false}
-                ListEmptyComponent={
-                  <EmptyStateBox
-                    title="No verified posts yet"
-                    subtitle={`When a question or helpful post reaches ${VERIFIED_VOTE_THRESHOLD} or more votes in Public Chat, it is automatically archived here so key Q&A never gets lost.`}
-                    actionLabel="Go to Public Chat & Questions"
-                    onAction={() => setActiveView('live')}
-                  />
-                }
-                renderItem={renderMessageCard}
-              />
-            </>
-          )}
-
-          {/* Floating Focus Timer Pill ("Timer Terbang") with Animated Alarm Mascot */}
-          <View
-            style={[
-              styles.floatingTimerPill,
-              isAlarmRinging && styles.floatingTimerPillAlarm,
-              activeView === 'live' && styles.floatingTimerPillAboveComposer,
-            ]}
-          >
-            <Animated.View
-              style={[
-                styles.floatingMascotBadge,
-                {
-                  transform: [
-                    { translateY: mascotJumpAnim },
-                    { rotate: mascotRotateDeg },
-                  ],
-                },
-              ]}
+          {/* Compact Centered Bottom Tools Bar: Camera, Desk, Share Screen, Ambient, Quiet, Chat */}
+          <View style={styles.bottomDock}>
+            {/* 1. Camera (Front Face) */}
+            <Pressable
+              style={[styles.dockItem, isFaceActive && styles.dockItemActive]}
+              onPress={() => handleToggleCameraTool('face')}
+              accessibilityRole="button"
+              accessibilityLabel={
+                isFaceActive ? 'Turn off front camera' : 'Turn on front camera'
+              }
             >
-              <Image
-                source={POMODORO_ALARM_IMAGE}
-                style={styles.floatingMascotImage}
-                resizeMode="contain"
-              />
-            </Animated.View>
+              <Text style={styles.dockIcon}>📷</Text>
+              <Text
+                style={[
+                  styles.dockLabel,
+                  isFaceActive && styles.dockLabelActive,
+                ]}
+                numberOfLines={1}
+              >
+                Camera
+              </Text>
+            </Pressable>
 
-            <Text
-              style={[
-                styles.floatingTimerReadout,
-                isAlarmRinging && styles.floatingTimerReadoutAlarm,
-              ]}
+            {/* 2. Desk Camera */}
+            <Pressable
+              style={[styles.dockItem, isDeskActive && styles.dockItemActive]}
+              onPress={() => handleToggleCameraTool('desk')}
+              accessibilityRole="button"
+              accessibilityLabel={
+                isDeskActive ? 'Turn off desk camera' : 'Turn on desk camera'
+              }
             >
-              {formattedTimer}
-            </Text>
+              <Text style={styles.dockIcon}>💡</Text>
+              <Text
+                style={[
+                  styles.dockLabel,
+                  isDeskActive && styles.dockLabelActive,
+                ]}
+                numberOfLines={1}
+              >
+                Desk
+              </Text>
+            </Pressable>
 
-            {isAlarmRinging ? (
-              <>
-                <Pressable
-                  style={styles.floatingStopAlarmBtn}
-                  onPress={handleDismissAlarm}
-                  hitSlop={6}
-                  accessibilityRole="button"
-                  accessibilityLabel="Stop alarm and reset timer"
-                >
-                  <Text style={styles.floatingStopAlarmText}>Stop</Text>
-                </Pressable>
-                <Pressable
-                  style={styles.floatingPlayBtn}
-                  onPress={handleToggleTimer}
-                  hitSlop={6}
-                  accessibilityRole="button"
-                  accessibilityLabel="Start next session timer"
-                >
-                  <Text style={styles.floatingPlayText}>▶</Text>
-                </Pressable>
-              </>
-            ) : (
-              <>
-                <Pressable
-                  style={[
-                    styles.floatingPlayBtn,
-                    isRunning && styles.floatingPlayBtnActive,
-                  ]}
-                  onPress={handleToggleTimer}
-                  hitSlop={6}
-                  accessibilityRole="button"
-                  accessibilityLabel={
-                    isRunning ? 'Pause session timer' : 'Start session timer'
-                  }
-                >
-                  <Text style={styles.floatingPlayText}>
-                    {isRunning ? '⏸' : '▶'}
-                  </Text>
-                </Pressable>
-                <Pressable
-                  style={styles.floatingCompleteBtn}
-                  onPress={handleCompleteSession}
-                  hitSlop={6}
-                  accessibilityRole="button"
-                  accessibilityLabel="Complete session and earn 5 points"
-                >
-                  <Text style={styles.floatingCompleteText}>✓ +5</Text>
-                </Pressable>
-              </>
-            )}
+            {/* 3. Share Screen */}
+            <Pressable
+              style={[
+                styles.dockItem,
+                isScreenSharing && styles.dockItemScreenActive,
+              ]}
+              onPress={handleToggleScreenShare}
+              accessibilityRole="button"
+              accessibilityState={{ selected: isScreenSharing }}
+              accessibilityLabel={
+                isScreenSharing ? 'Stop sharing screen' : 'Share screen'
+              }
+            >
+              <Text style={styles.dockIcon}>
+                {isScreenSharing ? '🔴' : '🖥️'}
+              </Text>
+              <Text
+                style={[
+                  styles.dockLabel,
+                  isScreenSharing && styles.dockLabelActive,
+                ]}
+                numberOfLines={1}
+              >
+                {isScreenSharing ? 'Stop Share' : 'Screen'}
+              </Text>
+            </Pressable>
+
+            {/* 4. Ambient Sound Mixer */}
+            <Pressable
+              style={[
+                styles.dockItem,
+                (mixerExpanded || hasAmbientOn) && styles.dockItemActive,
+              ]}
+              onPress={() => setMixerExpanded((prev) => !prev)}
+              accessibilityRole="button"
+              accessibilityLabel="Toggle ambient sound mixer"
+            >
+              <Text style={styles.dockIcon}>🎧</Text>
+              <Text
+                style={[
+                  styles.dockLabel,
+                  (mixerExpanded || hasAmbientOn) && styles.dockLabelActive,
+                ]}
+                numberOfLines={1}
+              >
+                {hasAmbientOn ? 'Sound' : 'Ambient'}
+              </Text>
+            </Pressable>
+
+            {/* 5. Quiet / Companion Bots */}
+            <Pressable
+              style={[styles.dockItem, emptyRoomDemo && styles.dockItemActive]}
+              onPress={() => setEmptyRoomDemo((prev) => !prev)}
+              accessibilityRole="button"
+              accessibilityLabel="Toggle Quiet or Empty Room Demo"
+            >
+              <Text style={styles.dockIcon}>🌙</Text>
+              <Text
+                style={[
+                  styles.dockLabel,
+                  emptyRoomDemo && styles.dockLabelActive,
+                ]}
+                numberOfLines={1}
+              >
+                Quiet
+              </Text>
+            </Pressable>
+
+            {/* 6. Live Questions Chat */}
+            <Pressable
+              style={[styles.dockItem, isChatOpen && styles.dockItemActive]}
+              onPress={() => {
+                setMixerExpanded(false);
+                setActiveView((prev) => (prev === 'grid' ? 'live' : 'grid'));
+              }}
+              accessibilityRole="button"
+              accessibilityLabel={
+                isChatOpen
+                  ? 'Close live question input'
+                  : 'Open live question input'
+              }
+            >
+              <Text style={styles.dockIcon}>💬</Text>
+              <Text
+                style={[
+                  styles.dockLabel,
+                  isChatOpen && styles.dockLabelActive,
+                ]}
+                numberOfLines={1}
+              >
+                Chat
+              </Text>
+            </Pressable>
           </View>
         </View>
       </KeyboardAvoidingView>
+
+      {/* Universal Camera Turn-On Confirmation Gate Modal (OFF -> ON) */}
+      <Modal
+        visible={pendingCameraMode !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={handleCancelCameraPrompt}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalEyebrow}>CAMERA HEADS-UP</Text>
+            <Text style={styles.modalTitle}>Ready to turn on your camera?</Text>
+            <Text style={styles.modalBody}>
+              {pendingCameraMode === 'desk'
+                ? 'Turning on Desk mode activates your camera (starting with the rear lens) in the live study room. Take a moment to get ready or adjust your space before continuing.'
+                : 'Turning on Face mode activates your front-facing camera in the live study room. Take a moment to get ready—for example, put on your hijab or adjust your desk—before continuing.'}
+            </Text>
+
+            <View style={styles.modalActions}>
+              <Pressable
+                style={styles.modalCancelBtn}
+                onPress={handleCancelCameraPrompt}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                style={styles.modalConfirmBtn}
+                onPress={handleConfirmCameraOn}
+              >
+                <Text style={styles.modalConfirmText}>Turn On Camera</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <PomodoroDurationModal
+        visible={clockSettingsOpen}
+        focusMinutes={focusMinutes}
+        secondsLeft={displaySeconds}
+        isRunning={isRunning}
+        isAlarmFinished={isAlarmFinished}
+        onSetFocusMinutes={onSetFocusMinutes}
+        onToggleTimer={onToggleTimer}
+        onResetTimer={onResetTimer}
+        onClose={() => setClockSettingsOpen(false)}
+      />
 
       <PrivateChatModal
         visible={activeChatPeer !== null}
@@ -943,25 +1366,14 @@ export function LiveRoomScreen({
         cooldownRemainingMs={
           activeChatPeer
             ? getPeerCooldownRemainingMs(
-                profile.privateChatCooldowns,
-                activeChatPeer.id
-              )
+              profile.privateChatCooldowns,
+              activeChatPeer.id
+            )
             : 0
         }
+        verifiedItemIds={profile.verifiedItemIds}
         onClose={() => setActiveChatPeer(null)}
         onCompleteVerifiedSession={onCompletePrivateHelp}
-      />
-
-      <BreakGameModal
-        visible={breakModalVisible}
-        onClose={() => setBreakModalVisible(false)}
-      />
-
-      <StudyReceiptModal
-        visible={receiptVisible}
-        profile={profile}
-        roomTitle={room.title}
-        onClose={() => setReceiptVisible(false)}
       />
     </SafeAreaView>
   );
@@ -977,239 +1389,398 @@ const styles = StyleSheet.create({
   },
   container: {
     flex: 1,
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    paddingBottom: 12,
+    paddingHorizontal: 8,
+    paddingTop: 8,
+    paddingBottom: 8,
+    gap: 8,
   },
-  topBar: {
+  minimalTopBar: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 10,
+    justifyContent: 'space-between',
+    gap: 8,
+    backgroundColor: COLORS.navy,
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
   },
   leaveBtn: {
-    paddingVertical: 7,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    backgroundColor: COLORS.surface,
+    paddingVertical: 5,
+    paddingHorizontal: 9,
+    borderRadius: 8,
+    backgroundColor: COLORS.navySoft,
     borderWidth: 1,
-    borderColor: COLORS.border,
+    borderColor: 'rgba(255, 253, 249, 0.16)',
   },
   leaveBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: COLORS.navy,
-  },
-  liveBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: COLORS.surface,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    paddingHorizontal: 11,
-    paddingVertical: 6,
-    borderRadius: 999,
-  },
-  liveDot: {
-    fontSize: 12,
-    fontWeight: '800',
-    color: COLORS.coral,
-  },
-  liveCount: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: COLORS.sage,
-  },
-  liveHeaderCard: {
-    backgroundColor: COLORS.navy,
-    borderColor: COLORS.navy,
-    marginBottom: 8,
-    gap: 4,
-    paddingHorizontal: 13,
-    paddingVertical: 10,
-  },
-  headerMetaRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  categoryText: {
     fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 0.8,
-    color: COLORS.coral,
-  },
-  sessionStatsText: {
-    fontSize: 11,
-    fontWeight: '600',
+    fontWeight: '700',
     color: COLORS.cream,
   },
+  topTitleBlock: {
+    flex: 1,
+    alignItems: 'center',
+    gap: 1,
+  },
   roomTitle: {
-    fontSize: 16,
+    fontSize: 13,
     fontWeight: '800',
     color: COLORS.surface,
   },
-  floatingTimerPill: {
-    position: 'absolute',
-    right: 16,
-    bottom: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-    backgroundColor: COLORS.navy,
+  roomSubMeta: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.coral,
+  },
+  rankBadge: {
+    backgroundColor: COLORS.navySoft,
     borderWidth: 1,
-    borderColor: 'rgba(255, 253, 249, 0.2)',
-    borderRadius: 999,
-    paddingLeft: 6,
-    paddingRight: 7,
+    borderColor: 'rgba(255, 253, 249, 0.18)',
+    paddingHorizontal: 8,
     paddingVertical: 5,
-    overflow: 'visible',
-    shadowColor: '#0F172A',
-    shadowOpacity: 0.22,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 6,
+    borderRadius: 8,
+    maxWidth: 112,
   },
-  floatingTimerPillAlarm: {
-    borderColor: COLORS.coral,
-    borderWidth: 1.5,
+  rankBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: COLORS.cream,
   },
-  floatingTimerPillAboveComposer: {
-    bottom: 124,
+  mainStage: {
+    flex: 1,
+    position: 'relative',
   },
-  floatingMascotBadge: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#FFFFFF',
+  blurredStageContent: {
+    opacity: 0.25,
+  },
+  floatingOverlayLayer: {
+    backgroundColor: 'rgba(244, 239, 228, 0.72)',
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 2,
+    paddingHorizontal: 14,
+    zIndex: 20,
+    elevation: 20,
+    borderRadius: 14,
   },
-  floatingMascotImage: {
-    width: 28,
-    height: 28,
+  floatingCardStack: {
+    width: '100%',
+    maxWidth: 420,
+    gap: 12,
   },
-  floatingTimerReadout: {
+  floatingCard: {
+    width: '100%',
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    gap: 8,
+    shadowColor: '#0F172A',
+    shadowOpacity: 0.16,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 8,
+  },
+  floatingCardAccepted: {
+    backgroundColor: '#F6FCFA',
+    borderColor: COLORS.sage,
+  },
+  floatingCardDiscarded: {
+    backgroundColor: '#E5E7EB',
+    borderColor: '#D1D5DB',
+  },
+  floatingHintText: {
+    fontSize: 11.5,
+    color: COLORS.textMuted,
+    lineHeight: 16,
+  },
+  liveBubbleTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 8,
+  },
+  liveQuestionEyebrow: {
+    flex: 1,
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.7,
+    color: COLORS.coral,
+  },
+  liveQuestionText: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: COLORS.navy,
+    lineHeight: 21,
+  },
+  answerClaimBtn: {
+    backgroundColor: COLORS.coral,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 10,
+  },
+  answerClaimBtnText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: COLORS.surface,
+  },
+  answerCancelBtn: {
+    backgroundColor: COLORS.surfaceSoft,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    paddingHorizontal: 11,
+    paddingVertical: 5,
+    borderRadius: 10,
+  },
+  answerCancelBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.textMuted,
+  },
+  liveAnswerComposer: {
+    gap: 5,
+    marginTop: 2,
+  },
+  liveAnswerInputRow: {
+    flexDirection: 'row',
+    gap: 6,
+    alignItems: 'center',
+  },
+  liveAnswerInput: {
+    flex: 1,
+    backgroundColor: COLORS.surfaceSoft,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     fontSize: 13,
+    color: COLORS.navy,
+  },
+  liveAnswerSubmitBtn: {
+    backgroundColor: COLORS.sage,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 10,
+  },
+  liveAnswerSubmitText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: COLORS.surface,
+  },
+  liveAnswerEyebrow: {
+    flex: 1,
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.7,
+    color: COLORS.sage,
+  },
+  voteTimerPill: {
+    backgroundColor: COLORS.navy,
+    paddingHorizontal: 10,
+    paddingVertical: 3.5,
+    borderRadius: 999,
+  },
+  voteTimerText: {
+    fontSize: 11.5,
     fontWeight: '800',
     color: COLORS.cream,
     fontVariant: ['tabular-nums'],
   },
-  floatingTimerReadoutAlarm: {
-    color: COLORS.coral,
-  },
-  floatingStopAlarmBtn: {
-    backgroundColor: COLORS.coralSoft,
+  dismissBubbleBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    backgroundColor: COLORS.surfaceSoft,
     borderWidth: 1,
-    borderColor: COLORS.coral,
-    paddingHorizontal: 9,
-    paddingVertical: 5,
-    borderRadius: 999,
+    borderColor: COLORS.border,
   },
-  floatingStopAlarmText: {
+  dismissBubbleText: {
     fontSize: 11,
     fontWeight: '800',
-    color: COLORS.coral,
+    color: COLORS.navy,
   },
-  floatingPlayBtn: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: COLORS.coral,
+  liveAnswerQuestionRef: {
+    fontSize: 11.5,
+    fontWeight: '600',
+    color: COLORS.textMuted,
+  },
+  liveAnswerText: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: COLORS.navy,
+    lineHeight: 21,
+  },
+  voteActionRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 2,
+  },
+  voteChoiceBtn: {
+    flex: 1,
+    backgroundColor: COLORS.surfaceSoft,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    paddingVertical: 8.5,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  voteChoiceUpActive: {
+    backgroundColor: COLORS.sage,
+    borderColor: COLORS.sage,
+  },
+  voteChoiceDownActive: {
+    backgroundColor: COLORS.danger,
+    borderColor: COLORS.danger,
+  },
+  voteChoiceText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: COLORS.navy,
+  },
+  voteChoiceTextActive: {
+    color: COLORS.surface,
+  },
+  resolutionBanner: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: COLORS.sageSoft,
+    borderRadius: 10,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    marginTop: 2,
+  },
+  resolutionBannerDiscarded: {
+    backgroundColor: '#D1D5DB',
+  },
+  resolutionText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '800',
+    color: COLORS.sage,
+  },
+  resolutionTextDiscarded: {
+    color: '#4B5563',
+  },
+  resolutionTally: {
+    fontSize: 11.5,
+    fontWeight: '700',
+    color: COLORS.navy,
+    fontVariant: ['tabular-nums'],
+  },
+  gridStageCenter: {
+    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  floatingPlayBtnActive: {
-    backgroundColor: COLORS.navySoft,
+  gridFrame: {
+    flexShrink: 1,
+    maxHeight: '100%',
+  },
+  pagerList: {
+    flexGrow: 0,
+  },
+  botBanner: {
+    backgroundColor: COLORS.sageSoft,
     borderWidth: 1,
-    borderColor: COLORS.coral,
-  },
-  floatingPlayText: {
-    fontSize: 11,
-    fontWeight: '800',
-    color: COLORS.surface,
-  },
-  floatingCompleteBtn: {
-    backgroundColor: COLORS.sage,
-    paddingHorizontal: 9,
-    paddingVertical: 5,
-    borderRadius: 999,
-  },
-  floatingCompleteText: {
-    fontSize: 11,
-    fontWeight: '800',
-    color: COLORS.surface,
-  },
-  noticeBanner: {
-    marginTop: 4,
-    backgroundColor: 'rgba(42, 111, 104, 0.28)',
-    borderRadius: 8,
+    borderColor: COLORS.sage,
+    borderRadius: 10,
     paddingHorizontal: 10,
     paddingVertical: 6,
+    marginBottom: 6,
   },
-  noticeBannerText: {
-    fontSize: 12,
+  botBannerTitle: {
+    fontSize: 11,
     fontWeight: '700',
-    color: COLORS.cream,
+    color: COLORS.sage,
+    textAlign: 'center',
   },
-  extrasRow: {
+  gridPageContent: {
+    gap: 6,
+    paddingVertical: 2,
+  },
+  gridRow: {
     flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: 6,
+  },
+  gridCell: {
+    flex: 1,
+  },
+  paginationRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 10,
+    paddingTop: 6,
+  },
+  slideLabelWrap: {
+    alignItems: 'center',
+    gap: 4,
+  },
+  slideLabelText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: COLORS.navy,
+  },
+  pageArrowBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  pageArrowBtnDisabled: {
+    opacity: 0.35,
+  },
+  pageArrowText: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: COLORS.navy,
+    lineHeight: 18,
+  },
+  dotsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  pageDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: COLORS.border,
+  },
+  pageDotActive: {
+    width: 18,
+    backgroundColor: COLORS.navy,
+  },
+  chatHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 8,
     marginBottom: 8,
   },
-  extraBtn: {
-    flex: 1,
-    backgroundColor: COLORS.surface,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 8,
-    alignItems: 'center',
-  },
-  extraBtnActive: {
-    backgroundColor: COLORS.sageSoft,
-    borderColor: COLORS.sage,
-  },
-  extraBtnText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: COLORS.navy,
-  },
-  extraBtnTextActive: {
-    color: COLORS.sage,
-  },
-  extraBtnReceipt: {
-    backgroundColor: COLORS.coralSoft,
-    borderWidth: 1,
-    borderColor: COLORS.coral,
-    borderRadius: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 11,
-    alignItems: 'center',
-  },
-  extraBtnReceiptText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: COLORS.coral,
-  },
   segmentedBar: {
+    flex: 1,
     flexDirection: 'row',
     backgroundColor: COLORS.surface,
     borderWidth: 1,
     borderColor: COLORS.border,
-    borderRadius: 12,
-    padding: 4,
+    borderRadius: 10,
+    padding: 3,
     gap: 4,
-    marginBottom: 8,
   },
   segmentTab: {
     flex: 1,
-    paddingVertical: 8,
+    paddingVertical: 7,
     paddingHorizontal: 6,
-    borderRadius: 9,
+    borderRadius: 7,
     alignItems: 'center',
   },
   segmentTabActive: {
@@ -1226,91 +1797,22 @@ const styles = StyleSheet.create({
   segmentTabTextActive: {
     color: COLORS.surface,
   },
-  gridToolbar: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 8,
-  },
-  toolbarPill: {
-    flex: 1,
+  backToGridBtn: {
     backgroundColor: COLORS.surface,
     borderWidth: 1,
     borderColor: COLORS.border,
-    borderRadius: 10,
     paddingHorizontal: 10,
-    paddingVertical: 7,
-  },
-  toolbarPillActive: {
-    backgroundColor: COLORS.sageSoft,
-    borderColor: COLORS.sage,
-  },
-  toolbarPillText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: COLORS.navy,
-  },
-  toolbarPillTextActive: {
-    color: COLORS.sage,
-  },
-  seatBtn: {
-    backgroundColor: COLORS.coral,
+    paddingVertical: 9,
     borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
   },
-  seatBtnActive: {
-    backgroundColor: COLORS.surface,
-    borderWidth: 1,
-    borderColor: COLORS.sage,
-  },
-  seatBtnText: {
+  backToGridText: {
     fontSize: 11,
-    fontWeight: '700',
-    color: COLORS.surface,
-  },
-  seatBtnTextActive: {
-    color: COLORS.sage,
-  },
-  botBanner: {
-    backgroundColor: COLORS.sageSoft,
-    borderWidth: 1,
-    borderColor: COLORS.sage,
-    borderRadius: 12,
-    padding: 10,
-    marginBottom: 8,
-    gap: 2,
-  },
-  botBannerTitle: {
-    fontSize: 12,
     fontWeight: '800',
-    color: COLORS.sage,
-  },
-  botBannerSub: {
-    fontSize: 11,
-    color: COLORS.textPrimary,
-    lineHeight: 16,
-  },
-  gridListContent: {
-    paddingBottom: 76,
-    gap: 10,
-  },
-  gridRow: {
-    gap: 10,
-  },
-  gridCell: {
-    flex: 1,
-  },
-  listCaption: {
-    fontSize: 11,
-    color: COLORS.textMuted,
-    marginBottom: 8,
-    paddingHorizontal: 2,
+    color: COLORS.navy,
   },
   listContent: {
     gap: 9,
-    paddingBottom: 76,
+    paddingBottom: 10,
   },
   msgCard: {
     gap: 8,
@@ -1319,6 +1821,53 @@ const styles = StyleSheet.create({
   verifiedCard: {
     borderColor: COLORS.sage,
     backgroundColor: '#FAFDFC',
+  },
+  discardedCard: {
+    backgroundColor: '#E5E7EB',
+    borderColor: '#D1D5DB',
+  },
+  discardedMutedText: {
+    color: '#6B7280',
+  },
+  discardedBadge: {
+    backgroundColor: '#D1D5DB',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 999,
+  },
+  discardedBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#4B5563',
+  },
+  answerBoxInCard: {
+    backgroundColor: COLORS.surfaceSoft,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 3,
+  },
+  answerBoxDiscarded: {
+    backgroundColor: '#D1D5DB',
+    borderColor: '#9CA3AF',
+  },
+  answerAuthorText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: COLORS.sage,
+  },
+  answerBodyText: {
+    fontSize: 13,
+    color: COLORS.navy,
+    lineHeight: 18,
+  },
+  discardedTally: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#6B7280',
+    fontVariant: ['tabular-nums'],
   },
   msgHeader: {
     flexDirection: 'row',
@@ -1406,6 +1955,10 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.sage,
     borderColor: COLORS.sage,
   },
+  voteBtnLocked: {
+    backgroundColor: COLORS.surfaceSoft,
+    borderColor: COLORS.border,
+  },
   voteText: {
     fontSize: 12,
     fontWeight: '700',
@@ -1413,6 +1966,9 @@ const styles = StyleSheet.create({
   },
   voteTextActive: {
     color: COLORS.surface,
+  },
+  voteTextLocked: {
+    color: COLORS.textMuted,
   },
   inputCard: {
     padding: 10,
@@ -1476,5 +2032,153 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: COLORS.danger,
+  },
+  mixerPopoverWrap: {
+    marginBottom: -2,
+  },
+  bottomDock: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'center',
+    maxWidth: '100%',
+    gap: 4,
+    backgroundColor: COLORS.navy,
+    borderRadius: 18,
+    paddingHorizontal: 6,
+    paddingVertical: 6,
+  },
+  dockItem: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 1,
+    minWidth: 48,
+    paddingVertical: 5,
+    paddingHorizontal: 7,
+    borderRadius: 12,
+    backgroundColor: COLORS.navySoft,
+    gap: 2,
+  },
+  dockItemActive: {
+    backgroundColor: COLORS.sage,
+  },
+  dockItemScreenActive: {
+    backgroundColor: COLORS.coral,
+    borderWidth: 1,
+    borderColor: COLORS.cream,
+  },
+  screenShareBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    backgroundColor: '#0F172A',
+    borderWidth: 1,
+    borderColor: COLORS.coral,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginBottom: 6,
+  },
+  screenShareBannerText: {
+    flex: 1,
+    fontSize: 11,
+    fontWeight: '800',
+    color: COLORS.cream,
+  },
+  screenShareStopBtn: {
+    backgroundColor: COLORS.coral,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
+  screenShareStopBtnText: {
+    fontSize: 10.5,
+    fontWeight: '800',
+    color: COLORS.surface,
+  },
+  screenShareStoppedNotice: {
+    alignSelf: 'center',
+    backgroundColor: COLORS.navy,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    marginBottom: 6,
+  },
+  screenShareStoppedText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.cream,
+  },
+  dockIcon: {
+    fontSize: 13.5,
+  },
+  dockLabel: {
+    fontSize: 8.5,
+    fontWeight: '700',
+    color: '#CBD5E1',
+  },
+  dockLabelActive: {
+    color: COLORS.surface,
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(30, 41, 59, 0.55)',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  modalCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    padding: 18,
+    gap: 10,
+  },
+  modalEyebrow: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.9,
+    color: COLORS.coral,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: COLORS.navy,
+  },
+  modalBody: {
+    fontSize: 13,
+    color: COLORS.textPrimary,
+    lineHeight: 19,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+    marginTop: 6,
+  },
+  modalCancelBtn: {
+    backgroundColor: COLORS.surfaceSoft,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 10,
+  },
+  modalCancelText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.navy,
+  },
+  modalConfirmBtn: {
+    backgroundColor: COLORS.sage,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    borderRadius: 10,
+  },
+  modalConfirmText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.surface,
   },
 });
