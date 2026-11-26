@@ -1,16 +1,21 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { CameraType, CameraView, useCameraPermissions } from 'expo-camera';
 import { COLORS } from '../theme/tokens';
 import { StudyMode, StudyParticipant } from '../types/studyble';
 
+const MAX_GOAL_LENGTH = 20;
+
 interface StudyParticipantCardProps {
   participant: StudyParticipant;
+  roomTitle?: string;
   isScreenFocused?: boolean;
   isTopContributor?: boolean;
   isOnCooldown?: boolean;
+  compact?: boolean;
+  isCameraConfirmed?: boolean;
   onAskPrivateChat?: (participant: StudyParticipant) => void;
-  onSelectStudyMode?: (mode: StudyMode) => void;
+  onUpdateGoal?: (nextGoal: string) => void;
 }
 
 const STUDY_MODE_META: Record<
@@ -38,46 +43,59 @@ const STUDY_MODE_META: Record<
     pillBg: COLORS.navy,
     pillText: COLORS.cream,
   },
+  screen: {
+    label: 'Screen',
+    icon: '🖥️',
+    stageBg: '#1E293B',
+    pillBg: COLORS.coral,
+    pillText: COLORS.surface,
+  },
 };
-
-type CameraMode = 'face' | 'desk';
-
-const CAMERA_MODES: ReadonlyArray<CameraMode> = ['face', 'desk'];
 
 export function StudyParticipantCard({
   participant,
+  roomTitle,
   isScreenFocused = true,
   isTopContributor = false,
   isOnCooldown = false,
+  compact = false,
+  isCameraConfirmed = false,
   onAskPrivateChat,
-  onSelectStudyMode,
+  onUpdateGoal,
 }: StudyParticipantCardProps) {
   const modeMeta = STUDY_MODE_META[participant.studyMode];
   const [permission, requestPermission] = useCameraPermissions();
   const hasAutoRequestedRef = useRef<boolean>(false);
 
   const [deskFacing, setDeskFacing] = useState<CameraType>('back');
-  const [cameraConfirmed, setCameraConfirmed] = useState<boolean>(false);
-  const [pendingCameraMode, setPendingCameraMode] = useState<CameraMode | null>(null);
+  const [isEditingGoal, setIsEditingGoal] = useState<boolean>(false);
+  const [goalDraft, setGoalDraft] = useState<string>(
+    participant.currentGoal.slice(0, MAX_GOAL_LENGTH)
+  );
 
-  const isFaceActive = participant.studyMode === 'face' && cameraConfirmed;
-  const isDeskActive = participant.studyMode === 'desk' && cameraConfirmed;
+  useEffect(() => {
+    if (!isEditingGoal) {
+      setGoalDraft(participant.currentGoal.slice(0, MAX_GOAL_LENGTH));
+    }
+  }, [participant.currentGoal, isEditingGoal]);
+
+  const isFaceActive = participant.studyMode === 'face' && isCameraConfirmed;
+  const isDeskActive = participant.studyMode === 'desk' && isCameraConfirmed;
   const isCameraOn = isFaceActive || isDeskActive;
+  const isScreenSharing =
+    participant.studyMode === 'screen' &&
+    (!participant.isCurrentUser || isScreenFocused);
 
-  // Reset desk lens default to back on desk entry; require fresh confirmation whenever returning to avatar
+  // Reset desk lens default to rear camera whenever entering Desk mode
   useEffect(() => {
     if (participant.studyMode === 'desk') {
       setDeskFacing('back');
-    } else if (participant.studyMode === 'avatar') {
-      setCameraConfirmed(false);
-      setPendingCameraMode(null);
     }
   }, [participant.studyMode]);
 
   useEffect(() => {
     if (!isScreenFocused) {
-      setCameraConfirmed(false);
-      setPendingCameraMode(null);
+      setIsEditingGoal(false);
     }
   }, [isScreenFocused]);
 
@@ -103,64 +121,23 @@ export function StudyParticipantCard({
     }
   }, [wantsLiveCamera, permission, requestPermission]);
 
-  const requestCameraPermissionIfNeeded = () => {
-    if (!permission?.granted && (permission === null || permission.canAskAgain)) {
-      hasAutoRequestedRef.current = true;
-      void requestPermission().catch(() => {});
-    }
-  };
-
-  const activateCameraMode = (targetMode: CameraMode) => {
-    if (!onSelectStudyMode) return;
-    if (targetMode === 'desk') {
-      setDeskFacing('back');
-    }
-    setCameraConfirmed(true);
-    requestCameraPermissionIfNeeded();
-    onSelectStudyMode(targetMode);
-  };
-
-  const handleSelectCameraMode = (targetMode: CameraMode) => {
-    if (!onSelectStudyMode) return;
-    if (isCameraOn && participant.studyMode === targetMode) return;
-
-    // When camera is already ON, switch seamlessly between Face and Desk without re-prompting
-    if (isCameraOn) {
-      setPendingCameraMode(null);
-      activateCameraMode(targetMode);
-      return;
-    }
-
-    // Whenever turning camera ON from OFF ('avatar'), show heads-up confirmation gate first
-    setPendingCameraMode(targetMode);
-  };
-
-  const handleCancelCameraPrompt = () => {
-    setPendingCameraMode(null);
-  };
-
-  const handleConfirmCameraOn = () => {
-    if (!pendingCameraMode) return;
-    const targetMode = pendingCameraMode;
-    setPendingCameraMode(null);
-    activateCameraMode(targetMode);
-  };
-
-  const handleToggleCamera = () => {
-    if (!onSelectStudyMode) return;
-    if (isCameraOn) {
-      setCameraConfirmed(false);
-      setPendingCameraMode(null);
-      onSelectStudyMode('avatar');
-      return;
-    }
-
-    // Turning camera ON from OFF defaults to Face first (Face -> Desk), gated by confirmation
-    handleSelectCameraMode('face');
-  };
-
   const handleFlipDeskCamera = () => {
     setDeskFacing((prev) => (prev === 'back' ? 'front' : 'back'));
+  };
+
+  const handleStartEditGoal = () => {
+    setGoalDraft(participant.currentGoal.slice(0, MAX_GOAL_LENGTH));
+    setIsEditingGoal(true);
+  };
+
+  const handleSaveGoal = () => {
+    const trimmed = goalDraft.trim().slice(0, MAX_GOAL_LENGTH);
+    if (trimmed.length > 0 && onUpdateGoal) {
+      onUpdateGoal(trimmed);
+    } else {
+      setGoalDraft(participant.currentGoal.slice(0, MAX_GOAL_LENGTH));
+    }
+    setIsEditingGoal(false);
   };
 
   const handleRequestCameraPermission = () => {
@@ -175,257 +152,362 @@ export function StudyParticipantCard({
   );
 
   const activeCameraFacing: CameraType = isFaceActive ? 'front' : deskFacing;
+  const isDarkStageOverlay = canRenderLiveCamera || isScreenSharing;
+  const canAskPeer = Boolean(
+    !participant.isCurrentUser &&
+      participant.privateChatEnabled &&
+      !participant.isBot &&
+      onAskPrivateChat
+  );
+
+  const displayName = participant.isCurrentUser
+    ? 'You'
+    : participant.name.split(' ')[0];
 
   return (
     <View
       style={[
         styles.card,
+        compact && styles.cardCompact,
         participant.isCurrentUser && styles.currentUserCard,
         isTopContributor && !participant.isCurrentUser && styles.topContributorCard,
         participant.isBot && styles.botCard,
       ]}
     >
-      {/* Visual Study Mode Stage */}
+      {/* Clean Stage: Live CameraView, Screen Share Preview, or Circular Avatar */}
       <View
         style={[
           styles.visualStage,
-          { backgroundColor: modeMeta.stageBg },
-          canRenderLiveCamera && styles.visualStageCamera,
+          compact && styles.visualStageCompact,
+          {
+            backgroundColor: canRenderLiveCamera
+              ? 'transparent'
+              : modeMeta.stageBg,
+          },
         ]}
       >
         {canRenderLiveCamera ? (
-          <View style={styles.cameraContainer}>
-            <CameraView
-              facing={activeCameraFacing}
-              style={styles.cameraPreview}
-            />
-            <View style={styles.cameraOverlayTop}>
-              <View style={[styles.modePill, { backgroundColor: modeMeta.pillBg }]}>
-                <Text style={[styles.modePillText, { color: modeMeta.pillText }]}>
-                  {isFaceActive ? '● Face' : '● Desk'}
-                </Text>
-              </View>
-
-              {/* Flip Front/Back is available in Desk mode only; Face stays strictly Front */}
-              {isDeskActive ? (
-                <Pressable
-                  style={styles.flipBtn}
-                  onPress={handleFlipDeskCamera}
-                  hitSlop={6}
-                  accessibilityLabel="Flip desk camera between front and back"
-                >
-                  <Text style={styles.flipBtnText}>
-                    ⇄ {deskFacing === 'back' ? 'Back' : 'Front'}
-                  </Text>
-                </Pressable>
-              ) : null}
+          <CameraView
+            facing={activeCameraFacing}
+            style={StyleSheet.absoluteFill}
+          />
+        ) : isScreenSharing ? (
+          <View
+            style={[
+              StyleSheet.absoluteFill,
+              styles.screenShareStage,
+              compact && styles.screenShareStageCompact,
+            ]}
+          >
+            <View
+              style={[
+                styles.screenPreviewFrame,
+                compact && styles.screenPreviewFrameCompact,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.screenShareLiveTag,
+                  compact && styles.screenShareLiveTagCompact,
+                ]}
+                numberOfLines={1}
+              >
+                ● LIVE SCREEN SHARE
+              </Text>
+              <Text
+                style={[
+                  styles.screenShareIcon,
+                  compact && styles.screenShareIconCompact,
+                ]}
+              >
+                🖥️
+              </Text>
+              <Text
+                style={[
+                  styles.screenShareSub,
+                  compact && styles.screenShareSubCompact,
+                ]}
+                numberOfLines={1}
+              >
+                {roomTitle ?? participant.currentGoal}
+              </Text>
             </View>
           </View>
         ) : (
-          <>
-            <View style={styles.stageTopRow}>
-              <View style={[styles.modePill, { backgroundColor: modeMeta.pillBg }]}>
-                <Text style={[styles.modePillText, { color: modeMeta.pillText }]}>
-                  {modeMeta.icon} {modeMeta.label}
-                </Text>
-              </View>
-
-              {isTopContributor && !participant.isBot ? (
-                <View style={styles.topWeeklyPill}>
-                  <Text style={styles.topWeeklyText}>
-                    ★ Top · {participant.weeklyHelpfulCount}
-                  </Text>
-                </View>
-              ) : null}
-            </View>
-
+          <View
+            style={[
+              StyleSheet.absoluteFill,
+              styles.avatarCenterWrap,
+              compact && styles.avatarCenterWrapCompact,
+            ]}
+          >
             <View
               style={[
                 styles.avatarCircle,
+                compact && styles.avatarCircleCompact,
                 participant.studyMode === 'desk' && styles.deskFrame,
                 participant.studyMode === 'face' && styles.faceFrame,
               ]}
             >
-              <Text style={styles.avatarEmoji}>{participant.avatarEmoji}</Text>
+              <Text
+                style={[
+                  styles.avatarEmoji,
+                  compact && styles.avatarEmojiCompact,
+                ]}
+              >
+                {participant.avatarEmoji}
+              </Text>
             </View>
 
             {wantsLiveCamera ? (
               permissionBlocked ? (
-                <Text style={styles.permissionDeniedText} numberOfLines={2}>
-                  Camera permission blocked — enable in Settings
+                <Text
+                  style={[
+                    styles.permissionDeniedText,
+                    compact && styles.permissionDeniedTextCompact,
+                  ]}
+                  numberOfLines={1}
+                >
+                  No cam perm
                 </Text>
               ) : (
                 <Pressable
-                  style={styles.permissionBtn}
+                  style={[
+                    styles.permissionBtn,
+                    compact && styles.permissionBtnCompact,
+                  ]}
                   onPress={handleRequestCameraPermission}
                 >
-                  <Text style={styles.permissionBtnText}>
-                    Tap to allow camera
+                  <Text
+                    style={[
+                      styles.permissionBtnText,
+                      compact && styles.permissionBtnTextCompact,
+                    ]}
+                  >
+                    Allow cam
                   </Text>
                 </Pressable>
               )
-            ) : participant.studyMode === 'desk' ? (
-              <Text style={styles.stageSubLabel}>
-                {participant.isCurrentUser ? 'Camera off' : 'Desk lamp on'}
-              </Text>
-            ) : participant.studyMode === 'face' ? (
-              <Text style={styles.stageSubLabel}>
-                {participant.isCurrentUser ? 'Camera off' : 'Cam focus active'}
-              </Text>
-            ) : (
-              <Text style={styles.stageSubLabel}>
-                {participant.isBot
-                  ? 'Companion bot'
-                  : participant.isCurrentUser
-                  ? 'Camera off'
-                  : 'Calm avatar'}
-              </Text>
-            )}
-          </>
-        )}
-      </View>
-
-      {/* Identity & Badges */}
-      <View style={styles.infoBlock}>
-        <View style={styles.nameRow}>
-          <Text style={styles.nameText} numberOfLines={1}>
-            {participant.name}
-            {participant.isCurrentUser ? ' (You)' : ''}
-          </Text>
-          <View style={styles.levelBadge}>
-            <Text style={styles.levelBadgeText}>Lv.{participant.level}</Text>
+            ) : null}
           </View>
-        </View>
+        )}
 
-        {participant.specialistBadge ? (
+        {/* Top Overlay inside Stage: Mode pill + Top star / Desk lens flip */}
+        <View
+          style={[
+            styles.stageTopOverlay,
+            compact && styles.stageTopOverlayCompact,
+          ]}
+        >
           <View
             style={[
-              styles.specialistBadge,
-              participant.isBot && styles.botBadge,
+              styles.modePill,
+              compact && styles.modePillCompact,
+              { backgroundColor: modeMeta.pillBg },
             ]}
           >
             <Text
               style={[
-                styles.specialistBadgeText,
-                participant.isBot && styles.botBadgeText,
+                styles.modePillText,
+                compact && styles.modePillTextCompact,
+                { color: modeMeta.pillText },
+              ]}
+            >
+              {canRenderLiveCamera
+                ? isFaceActive
+                  ? '● Face'
+                  : '● Desk'
+                : isScreenSharing
+                ? compact
+                  ? '● LIVE SCREEN'
+                  : '● LIVE SCREEN SHARE'
+                : compact
+                ? modeMeta.icon
+                : `${modeMeta.icon} ${modeMeta.label}`}
+            </Text>
+          </View>
+
+          {canRenderLiveCamera && isDeskActive ? (
+            <Pressable
+              style={[styles.flipBtn, compact && styles.flipBtnCompact]}
+              onPress={handleFlipDeskCamera}
+              hitSlop={6}
+              accessibilityLabel="Flip desk camera between front and back"
+            >
+              <Text
+                style={[
+                  styles.flipBtnText,
+                  compact && styles.flipBtnTextCompact,
+                ]}
+              >
+                {compact
+                  ? '⇄'
+                  : `⇄ ${deskFacing === 'back' ? 'Back' : 'Front'}`}
+              </Text>
+            </Pressable>
+          ) : isTopContributor && !participant.isBot ? (
+            <View
+              style={[
+                styles.topWeeklyPill,
+                compact && styles.topWeeklyPillCompact,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.topWeeklyText,
+                  compact && styles.topWeeklyTextCompact,
+                ]}
+              >
+                {compact ? '★' : `★ Top · ${participant.weeklyHelpfulCount}`}
+              </Text>
+            </View>
+          ) : null}
+        </View>
+
+        {/* Bottom Info inside Stage (no gray tint/veil) */}
+        <View
+          style={[
+            styles.stageBottomOverlay,
+            compact && styles.stageBottomOverlayCompact,
+          ]}
+        >
+          <View style={styles.nameRow}>
+            <Text
+              style={[
+                styles.nameText,
+                compact && styles.nameTextCompact,
+                isDarkStageOverlay && styles.cameraOverlayText,
+              ]}
+              numberOfLines={1}
+            >
+              {displayName}
+            </Text>
+            <Text
+              style={[
+                styles.levelInlineText,
+                compact && styles.levelInlineTextCompact,
+                isDarkStageOverlay && styles.cameraOverlaySubText,
+              ]}
+            >
+              Lv.{participant.level}
+            </Text>
+          </View>
+
+          {!compact && participant.specialistBadge ? (
+            <Text
+              style={[
+                styles.specialistInlineText,
+                isDarkStageOverlay && styles.cameraOverlaySubText,
               ]}
               numberOfLines={1}
             >
               ✦ {participant.specialistBadge}
             </Text>
-          </View>
-        ) : null}
+          ) : null}
 
-        <Text style={styles.goalText} numberOfLines={1}>
-          {participant.currentGoal}
-        </Text>
-      </View>
-
-      {/* Card Action Footer */}
-      {participant.isCurrentUser && onSelectStudyMode ? (
-        <View style={styles.cameraControlsWrap}>
-          <Pressable
-            style={[styles.camToggleBtn, isCameraOn && styles.camToggleBtnOn]}
-            onPress={handleToggleCamera}
-            accessibilityRole="switch"
-            accessibilityState={{ checked: isCameraOn }}
-          >
-            <Text
-              style={[
-                styles.camToggleText,
-                isCameraOn && styles.camToggleTextOn,
-              ]}
-            >
-              {isCameraOn ? '📷 Cam On · Turn Off' : '📷 Cam Off · Turn On'}
-            </Text>
-          </Pressable>
-
-          <View style={styles.camModeRow}>
-            {CAMERA_MODES.map((mode) => {
-              const isFace = mode === 'face';
-              const active = isFace ? isFaceActive : isDeskActive;
-              return (
+          {participant.isCurrentUser && onUpdateGoal ? (
+            isEditingGoal ? (
+              <View style={styles.goalEditRow}>
+                <TextInput
+                  style={[styles.goalInput, compact && styles.goalInputCompact]}
+                  value={goalDraft}
+                  onChangeText={(text) =>
+                    setGoalDraft(text.slice(0, MAX_GOAL_LENGTH))
+                  }
+                  maxLength={MAX_GOAL_LENGTH}
+                  autoFocus
+                  returnKeyType="done"
+                  onSubmitEditing={handleSaveGoal}
+                  placeholder="Topic..."
+                  placeholderTextColor={COLORS.textMuted}
+                  accessibilityLabel="Edit study topic (max 20 characters)"
+                />
                 <Pressable
-                  key={mode}
                   style={[
-                    styles.camModePill,
-                    active && styles.camModePillActive,
+                    styles.goalSaveBtn,
+                    compact && styles.goalSaveBtnCompact,
                   ]}
-                  onPress={() => handleSelectCameraMode(mode)}
+                  onPress={handleSaveGoal}
+                  hitSlop={6}
                   accessibilityRole="button"
-                  accessibilityState={{ selected: active }}
+                  accessibilityLabel="Save study topic"
                 >
                   <Text
                     style={[
-                      styles.camModePillText,
-                      active && styles.camModePillTextActive,
+                      styles.goalSaveBtnText,
+                      compact && styles.goalSaveBtnTextCompact,
                     ]}
                   >
-                    {STUDY_MODE_META[mode].label}
+                    ✓
                   </Text>
                 </Pressable>
-              );
-            })}
-          </View>
+              </View>
+            ) : (
+              <View style={styles.goalRow}>
+                <Text
+                  style={[
+                    styles.goalOverlayTextFlex,
+                    compact && styles.goalOverlayTextCompact,
+                    isDarkStageOverlay && styles.cameraOverlaySubText,
+                  ]}
+                  numberOfLines={1}
+                >
+                  {participant.currentGoal}
+                </Text>
+                <Pressable
+                  style={styles.goalEditBtn}
+                  onPress={handleStartEditGoal}
+                  hitSlop={6}
+                  accessibilityRole="button"
+                  accessibilityLabel="Edit study topic"
+                >
+                  <Text
+                    style={[
+                      styles.goalEditIcon,
+                      compact && styles.goalEditIconCompact,
+                    ]}
+                  >
+                    ✏️
+                  </Text>
+                </Pressable>
+              </View>
+            )
+          ) : (
+            <Text
+              style={[
+                styles.goalOverlayText,
+                compact && styles.goalOverlayTextCompact,
+                isDarkStageOverlay && styles.cameraOverlaySubText,
+              ]}
+              numberOfLines={1}
+            >
+              {participant.isBot ? 'Companion bot' : participant.currentGoal}
+            </Text>
+          )}
         </View>
-      ) : participant.privateChatEnabled && !participant.isBot && onAskPrivateChat ? (
+      </View>
+
+      {/* Ask action flush & integrated inside the bottom of peer cards */}
+      {canAskPeer && onAskPrivateChat ? (
         <Pressable
-          style={[styles.askBtn, isOnCooldown && styles.askBtnCooldown]}
+          style={[
+            styles.askBtn,
+            compact && styles.askBtnCompact,
+            isOnCooldown && styles.askBtnCooldown,
+          ]}
           onPress={() => onAskPrivateChat(participant)}
         >
           <Text
             style={[
               styles.askBtnText,
+              compact && styles.askBtnTextCompact,
               isOnCooldown && styles.askBtnCooldownText,
             ]}
             numberOfLines={1}
           >
-            {isOnCooldown ? '1-on-1 (Cooldown)' : 'Ask 1-on-1'}
+            {isOnCooldown ? 'Cooldown' : 'Ask'}
           </Text>
         </Pressable>
-      ) : (
-        <View style={styles.quietFooter}>
-          <Text style={styles.quietFooterText} numberOfLines={1}>
-            {participant.isBot ? 'Quiet study companion' : 'Quiet focus mode'}
-          </Text>
-        </View>
-      )}
-
-      {/* Universal Camera Turn-On Confirmation Gate Modal (OFF -> ON) */}
-      {participant.isCurrentUser ? (
-        <Modal
-          visible={pendingCameraMode !== null}
-          transparent
-          animationType="fade"
-          onRequestClose={handleCancelCameraPrompt}
-        >
-          <View style={styles.modalBackdrop}>
-            <View style={styles.modalCard}>
-              <Text style={styles.modalEyebrow}>CAMERA HEADS-UP</Text>
-              <Text style={styles.modalTitle}>Ready to turn on your camera?</Text>
-              <Text style={styles.modalBody}>
-                {pendingCameraMode === 'desk'
-                  ? 'Turning on Desk mode activates your camera (starting with the rear lens) in the live study room. Take a moment to get ready or adjust your space before continuing.'
-                  : 'Turning on Face mode activates your front-facing camera in the live study room. Take a moment to get ready—for example, put on your hijab or adjust your desk—before continuing.'}
-              </Text>
-
-              <View style={styles.modalActions}>
-                <Pressable
-                  style={styles.modalCancelBtn}
-                  onPress={handleCancelCameraPrompt}
-                >
-                  <Text style={styles.modalCancelText}>Cancel</Text>
-                </Pressable>
-                <Pressable
-                  style={styles.modalConfirmBtn}
-                  onPress={handleConfirmCameraOn}
-                >
-                  <Text style={styles.modalConfirmText}>Turn On Camera</Text>
-                </Pressable>
-              </View>
-            </View>
-          </View>
-        </Modal>
       ) : null}
     </View>
   );
@@ -434,17 +516,18 @@ export function StudyParticipantCard({
 const styles = StyleSheet.create({
   card: {
     flex: 1,
-    backgroundColor: COLORS.surface,
     borderRadius: 14,
     borderWidth: 1,
     borderColor: COLORS.border,
-    padding: 10,
-    gap: 8,
+    backgroundColor: COLORS.surface,
+    overflow: 'hidden',
+  },
+  cardCompact: {
+    borderRadius: 12,
   },
   currentUserCard: {
     borderColor: COLORS.coral,
     borderWidth: 1.5,
-    backgroundColor: '#FFFBF8',
   },
   topContributorCard: {
     borderColor: COLORS.sage,
@@ -453,94 +536,103 @@ const styles = StyleSheet.create({
   botCard: {
     borderStyle: 'dashed',
     borderColor: COLORS.sage,
-    backgroundColor: '#FAFDFC',
   },
   visualStage: {
-    borderRadius: 10,
-    padding: 8,
-    alignItems: 'center',
-    gap: 5,
-    minHeight: 96,
-    justifyContent: 'center',
-  },
-  visualStageCamera: {
-    padding: 0,
-    overflow: 'hidden',
-    backgroundColor: COLORS.navy,
-  },
-  cameraContainer: {
+    flex: 1,
     width: '100%',
-    height: 96,
-    borderRadius: 10,
+    minHeight: 176,
     overflow: 'hidden',
     position: 'relative',
-  },
-  cameraPreview: {
-    width: '100%',
-    height: '100%',
-  },
-  cameraOverlayTop: {
-    position: 'absolute',
-    top: 6,
-    left: 6,
-    right: 6,
-    flexDirection: 'row',
     justifyContent: 'space-between',
+  },
+  visualStageCompact: {
+    minHeight: 118,
+  },
+  screenShareStage: {
+    justifyContent: 'center',
     alignItems: 'center',
-    gap: 4,
+    paddingHorizontal: 10,
+    paddingTop: 18,
+    paddingBottom: 28,
+    backgroundColor: '#1E293B',
   },
-  flipBtn: {
-    backgroundColor: 'rgba(30, 41, 59, 0.78)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 253, 249, 0.45)',
-    paddingHorizontal: 7,
-    paddingVertical: 2.5,
-    borderRadius: 999,
+  screenShareStageCompact: {
+    paddingHorizontal: 5,
+    paddingTop: 16,
+    paddingBottom: 24,
   },
-  flipBtnText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: COLORS.surface,
-  },
-  stageTopRow: {
-    width: '100%',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+  screenPreviewFrame: {
+    width: '90%',
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+    backgroundColor: '#0F172A',
+    borderWidth: 1.5,
+    borderColor: COLORS.coral,
     alignItems: 'center',
-    gap: 4,
+    justifyContent: 'center',
+    gap: 3,
   },
-  modePill: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 999,
+  screenPreviewFrameCompact: {
+    width: '94%',
+    paddingVertical: 5,
+    paddingHorizontal: 4,
+    borderRadius: 8,
+    gap: 1.5,
   },
-  modePillText: {
-    fontSize: 10,
-    fontWeight: '700',
-  },
-  topWeeklyPill: {
-    backgroundColor: COLORS.coralSoft,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 999,
-  },
-  topWeeklyText: {
-    fontSize: 9,
-    fontWeight: '800',
+  screenShareLiveTag: {
+    fontSize: 8.5,
+    fontWeight: '900',
+    letterSpacing: 0.4,
     color: COLORS.coral,
+    textAlign: 'center',
+  },
+  screenShareLiveTagCompact: {
+    fontSize: 6.5,
+    letterSpacing: 0.2,
+  },
+  screenShareIcon: {
+    fontSize: 22,
+  },
+  screenShareIconCompact: {
+    fontSize: 16,
+  },
+  screenShareSub: {
+    fontSize: 9.5,
+    fontWeight: '700',
+    color: COLORS.cream,
+    textAlign: 'center',
+  },
+  screenShareSubCompact: {
+    fontSize: 7,
+  },
+  avatarCenterWrap: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingBottom: 28,
+    gap: 4,
+  },
+  avatarCenterWrapCompact: {
+    paddingBottom: 24,
+    gap: 2,
   },
   avatarCircle: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 80,
+    height: 80,
+    borderRadius: 999,
     backgroundColor: COLORS.surface,
-    borderWidth: 1.5,
+    borderWidth: 2,
     borderColor: COLORS.border,
     justifyContent: 'center',
     alignItems: 'center',
   },
+  avatarCircleCompact: {
+    width: 54,
+    height: 54,
+    borderRadius: 999,
+    borderWidth: 1.5,
+  },
   deskFrame: {
-    borderRadius: 10,
     borderColor: COLORS.navy,
   },
   faceFrame: {
@@ -548,220 +640,256 @@ const styles = StyleSheet.create({
     borderWidth: 2,
   },
   avatarEmoji: {
-    fontSize: 22,
+    fontSize: 38,
   },
-  stageSubLabel: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: COLORS.textMuted,
+  avatarEmojiCompact: {
+    fontSize: 27,
   },
-  permissionBtn: {
-    backgroundColor: COLORS.sage,
-    paddingHorizontal: 9,
-    paddingVertical: 4,
+  stageTopOverlay: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 7,
+    paddingTop: 7,
+    gap: 4,
+    zIndex: 2,
+  },
+  stageTopOverlayCompact: {
+    paddingHorizontal: 5,
+    paddingTop: 5,
+    gap: 2,
+  },
+  modePill: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
     borderRadius: 999,
   },
-  permissionBtnText: {
+  modePillCompact: {
+    paddingHorizontal: 4.5,
+    paddingVertical: 1,
+  },
+  modePillText: {
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  modePillTextCompact: {
+    fontSize: 8.5,
+  },
+  flipBtn: {
+    backgroundColor: COLORS.navy,
+    borderWidth: 1,
+    borderColor: COLORS.cream,
+    paddingHorizontal: 7,
+    paddingVertical: 2.5,
+    borderRadius: 999,
+  },
+  flipBtnCompact: {
+    paddingHorizontal: 5.5,
+    paddingVertical: 1.5,
+  },
+  flipBtnText: {
     fontSize: 10,
     fontWeight: '700',
     color: COLORS.surface,
   },
-  permissionDeniedText: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: COLORS.danger,
-    textAlign: 'center',
+  flipBtnTextCompact: {
+    fontSize: 9,
   },
-  infoBlock: {
-    gap: 4,
+  topWeeklyPill: {
+    backgroundColor: COLORS.coralSoft,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 999,
+  },
+  topWeeklyPillCompact: {
+    paddingHorizontal: 4.5,
+    paddingVertical: 1,
+  },
+  topWeeklyText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: COLORS.coral,
+  },
+  topWeeklyTextCompact: {
+    fontSize: 8.5,
+  },
+  permissionBtn: {
+    backgroundColor: COLORS.sage,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+  },
+  permissionBtnCompact: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  permissionBtnText: {
+    fontSize: 9.5,
+    fontWeight: '700',
+    color: COLORS.surface,
+  },
+  permissionBtnTextCompact: {
+    fontSize: 8,
+  },
+  permissionDeniedText: {
+    fontSize: 9.5,
+    fontWeight: '700',
+    color: COLORS.danger,
+  },
+  permissionDeniedTextCompact: {
+    fontSize: 8,
+  },
+  stageBottomOverlay: {
+    backgroundColor: 'transparent',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    gap: 2,
+    zIndex: 2,
+  },
+  stageBottomOverlayCompact: {
+    paddingHorizontal: 5.5,
+    paddingVertical: 4,
+    gap: 1.5,
   },
   nameRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    gap: 4,
+    gap: 3,
   },
   nameText: {
     flex: 1,
-    fontSize: 13,
+    fontSize: 12.5,
     fontWeight: '800',
     color: COLORS.navy,
   },
-  levelBadge: {
-    backgroundColor: COLORS.surfaceSoft,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 6,
+  nameTextCompact: {
+    fontSize: 10,
   },
-  levelBadgeText: {
+  levelInlineText: {
     fontSize: 10,
     fontWeight: '800',
-    color: COLORS.navy,
+    color: COLORS.sage,
   },
-  specialistBadge: {
-    alignSelf: 'flex-start',
-    backgroundColor: COLORS.sageSoft,
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 999,
-    maxWidth: '100%',
+  levelInlineTextCompact: {
+    fontSize: 8.5,
   },
-  specialistBadgeText: {
+  specialistInlineText: {
     fontSize: 10,
     fontWeight: '700',
     color: COLORS.sage,
   },
-  botBadge: {
-    backgroundColor: COLORS.cream,
-  },
-  botBadgeText: {
+  goalOverlayText: {
+    fontSize: 10.5,
     color: COLORS.textMuted,
+    lineHeight: 13,
   },
-  goalText: {
-    fontSize: 11,
+  goalOverlayTextFlex: {
+    flex: 1,
+    fontSize: 10.5,
     color: COLORS.textMuted,
-    lineHeight: 15,
+    lineHeight: 13,
   },
-  cameraControlsWrap: {
-    gap: 6,
+  goalOverlayTextCompact: {
+    fontSize: 8.5,
+    lineHeight: 11,
   },
-  camToggleBtn: {
-    backgroundColor: COLORS.surfaceSoft,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    paddingVertical: 6,
-    paddingHorizontal: 8,
-    borderRadius: 8,
+  cameraOverlayText: {
+    color: COLORS.surface,
+    textShadowColor: 'rgba(15, 23, 42, 0.85)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
+  },
+  cameraOverlaySubText: {
+    color: COLORS.surface,
+    textShadowColor: 'rgba(15, 23, 42, 0.85)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 2.5,
+  },
+  goalRow: {
+    flexDirection: 'row',
     alignItems: 'center',
+    gap: 2,
   },
-  camToggleBtnOn: {
-    backgroundColor: COLORS.sage,
+  goalEditBtn: {
+    paddingHorizontal: 2,
+    paddingVertical: 0.5,
+    borderRadius: 4,
+  },
+  goalEditIcon: {
+    fontSize: 10.5,
+  },
+  goalEditIconCompact: {
+    fontSize: 9,
+  },
+  goalEditRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+  },
+  goalInput: {
+    flex: 1,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
     borderColor: COLORS.sage,
-  },
-  camToggleText: {
+    borderRadius: 5,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
     fontSize: 10,
-    fontWeight: '700',
     color: COLORS.navy,
   },
-  camToggleTextOn: {
-    color: COLORS.surface,
+  goalInputCompact: {
+    paddingHorizontal: 4,
+    paddingVertical: 1.5,
+    fontSize: 8.5,
   },
-  camModeRow: {
-    flexDirection: 'row',
-    gap: 6,
-  },
-  camModePill: {
-    flex: 1,
-    paddingVertical: 4,
-    borderRadius: 7,
-    backgroundColor: COLORS.surfaceSoft,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+  goalSaveBtn: {
+    backgroundColor: COLORS.sage,
+    borderRadius: 5,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  camModePillActive: {
-    backgroundColor: COLORS.navy,
-    borderColor: COLORS.navy,
+  goalSaveBtnCompact: {
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    borderRadius: 4,
   },
-  camModePillText: {
+  goalSaveBtnText: {
     fontSize: 10,
-    fontWeight: '700',
-    color: COLORS.textMuted,
-  },
-  camModePillTextActive: {
+    fontWeight: '800',
     color: COLORS.surface,
+  },
+  goalSaveBtnTextCompact: {
+    fontSize: 9,
   },
   askBtn: {
+    width: '100%',
     backgroundColor: COLORS.coral,
     paddingVertical: 7,
-    paddingHorizontal: 10,
-    borderRadius: 8,
+    paddingHorizontal: 8,
     alignItems: 'center',
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 253, 249, 0.2)',
+  },
+  askBtnCompact: {
+    paddingVertical: 5,
+    paddingHorizontal: 4,
   },
   askBtnCooldown: {
     backgroundColor: COLORS.surfaceSoft,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    borderTopColor: COLORS.border,
   },
   askBtnText: {
     fontSize: 11,
-    fontWeight: '700',
+    fontWeight: '800',
     color: COLORS.surface,
+  },
+  askBtnTextCompact: {
+    fontSize: 9.5,
   },
   askBtnCooldownText: {
     color: COLORS.textMuted,
-  },
-  quietFooter: {
-    paddingVertical: 6,
-    alignItems: 'center',
-    backgroundColor: COLORS.surfaceSoft,
-    borderRadius: 8,
-  },
-  quietFooterText: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: COLORS.textMuted,
-  },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(30, 41, 59, 0.55)',
-    justifyContent: 'center',
-    padding: 20,
-  },
-  modalCard: {
-    backgroundColor: COLORS.surface,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    padding: 18,
-    gap: 10,
-  },
-  modalEyebrow: {
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 0.9,
-    color: COLORS.coral,
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: COLORS.navy,
-  },
-  modalBody: {
-    fontSize: 13,
-    color: COLORS.textPrimary,
-    lineHeight: 19,
-  },
-  modalActions: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: 10,
-    marginTop: 6,
-  },
-  modalCancelBtn: {
-    backgroundColor: COLORS.surfaceSoft,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    paddingHorizontal: 14,
-    paddingVertical: 9,
-    borderRadius: 10,
-  },
-  modalCancelText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: COLORS.navy,
-  },
-  modalConfirmBtn: {
-    backgroundColor: COLORS.sage,
-    paddingHorizontal: 16,
-    paddingVertical: 9,
-    borderRadius: 10,
-  },
-  modalConfirmText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: COLORS.surface,
   },
 });

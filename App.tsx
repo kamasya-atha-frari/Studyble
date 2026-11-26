@@ -392,6 +392,10 @@ export default function App() {
                       handleEnterLiveRoom(roomId);
                       navigation.navigate('LiveRoom', { roomId });
                     }}
+                    onSessionComplete={handleSessionComplete}
+                    onUpdateFocusMinutes={(defaultFocusMinutes) =>
+                      handleUpdateProfile({ defaultFocusMinutes })
+                    }
                   />
                 )}
               </RoomsStack.Screen>

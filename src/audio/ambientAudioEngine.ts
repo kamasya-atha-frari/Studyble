@@ -513,8 +513,8 @@ export class AmbientAudioEngine {
   private async stopAndReleaseNativePlayer(
     handle: NativeAudioPlayerHandle
   ): Promise<void> {
-    let setVolResult: void | Promise<void>;
-    let pauseResult: void | Promise<void>;
+    let setVolResult: void | Promise<void> = undefined;
+    let pauseResult: void | Promise<void> = undefined;
 
     try {
       setVolResult = handle.setVolume(0);
@@ -577,7 +577,8 @@ export class AmbientAudioEngine {
 
     if (this.nativeCreatingPromises[channel]) return;
 
-    const creationPromise: Promise<NativeAudioPlayerHandle | null> = (async () => {
+    let creationPromise: Promise<NativeAudioPlayerHandle | null> | undefined;
+    creationPromise = (async () => {
       try {
         const source = this.resolveNativeSource(channel);
         const handle = await adapter.createLoopingPlayer(source, volume);

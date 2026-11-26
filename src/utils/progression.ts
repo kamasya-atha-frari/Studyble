@@ -2,7 +2,48 @@ import { RankTitle, StudyParticipant } from '../types/studyble';
 
 export const POINTS_PER_LEVEL = 10;
 export const PRIVATE_HELP_REWARD_POINTS = 3;
+export const QNA_VERIFIED_ANSWER_POINTS = 1;
 export const PRIVATE_CHAT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+export const DAILY_VERIFIED_LIMIT_LOW_LEVEL = 2;
+export const DAILY_LIMIT_MIN_LEVEL = 1;
+export const DAILY_LIMIT_MAX_LEVEL = 10;
+
+export type VerificationOutcomeReason =
+  | 'ok'
+  | 'cooldown'
+  | 'daily_limit'
+  | 'already_verified';
+
+export interface VerificationResult {
+  awarded: boolean;
+  reason: VerificationOutcomeReason;
+  remainingMs: number;
+  todayCount: number;
+}
+
+export function getLocalDateKey(now: Date = new Date()): string {
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+export function isSubjectToDailyVerifiedCap(level: number): boolean {
+  return level >= DAILY_LIMIT_MIN_LEVEL && level <= DAILY_LIMIT_MAX_LEVEL;
+}
+
+export function getTodayVerifiedCount(
+  dailyVerifiedDate: string,
+  dailyVerifiedCount: number,
+  now: Date = new Date()
+): number {
+  if (dailyVerifiedDate !== getLocalDateKey(now)) {
+    return 0;
+  }
+  return Number.isFinite(dailyVerifiedCount)
+    ? Math.max(0, Math.floor(dailyVerifiedCount))
+    : 0;
+}
 
 export interface ProgressionInfo {
   level: number;

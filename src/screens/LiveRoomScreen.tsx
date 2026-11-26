@@ -1,6 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Animated,
+  Easing,
   FlatList,
+  Image,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -57,6 +60,8 @@ interface LiveRoomScreenProps {
 
 type LiveViewTab = 'grid' | 'live' | 'archive';
 
+const POMODORO_ALARM_IMAGE = require('../../assets/pomodoro-alarm.png');
+
 export function LiveRoomScreen({
   room,
   profile,
@@ -94,6 +99,10 @@ export function LiveRoomScreen({
   const [sessionNotice, setSessionNotice] = useState<string>('');
   const [secondsLeft, setSecondsLeft] = useState<number>(initialFocusMinutes * 60);
   const [isRunning, setIsRunning] = useState<boolean>(false);
+  const [isAlarmRinging, setIsAlarmRinging] = useState<boolean>(false);
+
+  const mascotRotateAnim = useRef(new Animated.Value(0)).current;
+  const mascotJumpAnim = useRef(new Animated.Value(0)).current;
 
   // Immediately dispose audio and force camera OFF on navigation blur or back-swipe removal
   useEffect(() => {
@@ -153,6 +162,7 @@ export function LiveRoomScreen({
   useEffect(() => {
     setSecondsLeft(initialFocusMinutes * 60);
     setIsRunning(false);
+    setIsAlarmRinging(false);
     setSessionNotice('');
     setEmptyRoomDemo(false);
     setIsSeated(true);
@@ -161,18 +171,128 @@ export function LiveRoomScreen({
   useEffect(() => {
     if (!isRunning) return;
     const id = setInterval(() => {
-      setSecondsLeft((prev) => {
-        if (prev <= 1) {
-          setIsRunning(false);
-          onSessionComplete(initialFocusMinutes);
-          setSessionNotice('Focus block finished! +5 pts added to your profile.');
-          return initialFocusMinutes * 60;
-        }
-        return prev - 1;
-      });
+      setSecondsLeft((prev) => Math.max(0, prev - 1));
     }, 1000);
     return () => clearInterval(id);
-  }, [isRunning, initialFocusMinutes, onSessionComplete]);
+  }, [isRunning]);
+
+  useEffect(() => {
+    if (!isRunning || secondsLeft > 0) return;
+    setIsRunning(false);
+    setIsAlarmRinging(true);
+    onSessionComplete(initialFocusMinutes);
+    setSessionNotice('Time is up! +5 pts added to your profile.');
+  }, [isRunning, secondsLeft, initialFocusMinutes, onSessionComplete]);
+
+  // Animate the alarm clock mascot:
+  // - Finished alarm (isAlarmRinging): rapid left-right shake (-18deg..18deg) + hopping bounce
+  // - Running (isRunning): smooth left-right rock (-10deg..10deg), translateY = 0
+  // - Paused/Idle: reset cleanly to 0deg and translateY = 0
+  useEffect(() => {
+    mascotRotateAnim.stopAnimation();
+    mascotJumpAnim.stopAnimation();
+
+    if (isAlarmRinging) {
+      mascotRotateAnim.setValue(0);
+      mascotJumpAnim.setValue(0);
+
+      const shakeLoop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(mascotRotateAnim, {
+            toValue: 18,
+            duration: 65,
+            easing: Easing.linear,
+            useNativeDriver: true,
+          }),
+          Animated.timing(mascotRotateAnim, {
+            toValue: -18,
+            duration: 130,
+            easing: Easing.linear,
+            useNativeDriver: true,
+          }),
+          Animated.timing(mascotRotateAnim, {
+            toValue: 0,
+            duration: 65,
+            easing: Easing.linear,
+            useNativeDriver: true,
+          }),
+        ])
+      );
+
+      const hopLoop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(mascotJumpAnim, {
+            toValue: -10,
+            duration: 110,
+            easing: Easing.out(Easing.quad),
+            useNativeDriver: true,
+          }),
+          Animated.timing(mascotJumpAnim, {
+            toValue: 0,
+            duration: 110,
+            easing: Easing.in(Easing.quad),
+            useNativeDriver: true,
+          }),
+          Animated.timing(mascotJumpAnim, {
+            toValue: -6,
+            duration: 90,
+            easing: Easing.out(Easing.quad),
+            useNativeDriver: true,
+          }),
+          Animated.timing(mascotJumpAnim, {
+            toValue: 0,
+            duration: 90,
+            easing: Easing.in(Easing.quad),
+            useNativeDriver: true,
+          }),
+        ])
+      );
+
+      const combined = Animated.parallel([shakeLoop, hopLoop]);
+      combined.start();
+
+      return () => {
+        combined.stop();
+      };
+    }
+
+    if (isRunning) {
+      mascotJumpAnim.setValue(0);
+      mascotRotateAnim.setValue(0);
+
+      const wiggleLoop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(mascotRotateAnim, {
+            toValue: 10,
+            duration: 280,
+            easing: Easing.inOut(Easing.sin),
+            useNativeDriver: true,
+          }),
+          Animated.timing(mascotRotateAnim, {
+            toValue: -10,
+            duration: 560,
+            easing: Easing.inOut(Easing.sin),
+            useNativeDriver: true,
+          }),
+          Animated.timing(mascotRotateAnim, {
+            toValue: 0,
+            duration: 280,
+            easing: Easing.inOut(Easing.sin),
+            useNativeDriver: true,
+          }),
+        ])
+      );
+      wiggleLoop.start();
+
+      return () => {
+        wiggleLoop.stop();
+      };
+    }
+
+    mascotRotateAnim.setValue(0);
+    mascotJumpAnim.setValue(0);
+    return undefined;
+  }, [isRunning, isAlarmRinging, mascotRotateAnim, mascotJumpAnim]);
 
   useEffect(() => {
     if (!sessionNotice) return;
@@ -292,10 +412,32 @@ export function LiveRoomScreen({
 
   const handleCompleteSession = () => {
     setIsRunning(false);
+    setIsAlarmRinging(false);
     setSecondsLeft(room.focusMinutes * 60);
     onSessionComplete(room.focusMinutes);
     setSessionNotice('Session completed! +5 pts and +1 completed session.');
   };
+
+  const handleDismissAlarm = () => {
+    setIsAlarmRinging(false);
+    setIsRunning(false);
+    setSecondsLeft(room.focusMinutes * 60);
+  };
+
+  const handleToggleTimer = () => {
+    if (isAlarmRinging || secondsLeft === 0) {
+      setIsAlarmRinging(false);
+      setSecondsLeft(room.focusMinutes * 60);
+      setIsRunning(true);
+      return;
+    }
+    setIsRunning((prev) => !prev);
+  };
+
+  const mascotRotateDeg = mascotRotateAnim.interpolate({
+    inputRange: [-18, 18],
+    outputRange: ['-18deg', '18deg'],
+  });
 
   const mins = Math.floor(secondsLeft / 60);
   const secs = secondsLeft % 60;
@@ -383,7 +525,7 @@ export function LiveRoomScreen({
             </View>
           </View>
 
-          {/* Session Header & Focus Timer */}
+          {/* Compact Room Header */}
           <SectionCard style={styles.liveHeaderCard}>
             <View style={styles.headerMetaRow}>
               <Text style={styles.categoryText}>{room.category.toUpperCase()}</Text>
@@ -391,33 +533,9 @@ export function LiveRoomScreen({
                 {progression.rankTitle} Lv.{progression.level} · {profile.points} pts
               </Text>
             </View>
-            <Text style={styles.roomTitle}>{room.title}</Text>
-
-            <View style={styles.timerRow}>
-              <View>
-                <Text style={styles.timerLabel}>
-                  {isRunning ? 'FOCUSING NOW' : 'SESSION FOCUS TIMER'}
-                </Text>
-                <Text style={styles.timerText}>{formattedTimer}</Text>
-              </View>
-
-              <View style={styles.timerBtns}>
-                <Pressable
-                  style={[styles.timerBtn, isRunning && styles.timerBtnPaused]}
-                  onPress={() => setIsRunning((prev) => !prev)}
-                >
-                  <Text style={styles.timerBtnText}>
-                    {isRunning ? 'Pause' : 'Start'}
-                  </Text>
-                </Pressable>
-                <Pressable
-                  style={styles.completeBtn}
-                  onPress={handleCompleteSession}
-                >
-                  <Text style={styles.completeBtnText}>Complete (+5)</Text>
-                </Pressable>
-              </View>
-            </View>
+            <Text style={styles.roomTitle} numberOfLines={1}>
+              {room.title}
+            </Text>
 
             {sessionNotice ? (
               <View style={styles.noticeBanner}>
@@ -728,6 +846,93 @@ export function LiveRoomScreen({
               />
             </>
           )}
+
+          {/* Floating Focus Timer Pill ("Timer Terbang") with Animated Alarm Mascot */}
+          <View
+            style={[
+              styles.floatingTimerPill,
+              isAlarmRinging && styles.floatingTimerPillAlarm,
+              activeView === 'live' && styles.floatingTimerPillAboveComposer,
+            ]}
+          >
+            <Animated.View
+              style={[
+                styles.floatingMascotBadge,
+                {
+                  transform: [
+                    { translateY: mascotJumpAnim },
+                    { rotate: mascotRotateDeg },
+                  ],
+                },
+              ]}
+            >
+              <Image
+                source={POMODORO_ALARM_IMAGE}
+                style={styles.floatingMascotImage}
+                resizeMode="contain"
+              />
+            </Animated.View>
+
+            <Text
+              style={[
+                styles.floatingTimerReadout,
+                isAlarmRinging && styles.floatingTimerReadoutAlarm,
+              ]}
+            >
+              {formattedTimer}
+            </Text>
+
+            {isAlarmRinging ? (
+              <>
+                <Pressable
+                  style={styles.floatingStopAlarmBtn}
+                  onPress={handleDismissAlarm}
+                  hitSlop={6}
+                  accessibilityRole="button"
+                  accessibilityLabel="Stop alarm and reset timer"
+                >
+                  <Text style={styles.floatingStopAlarmText}>Stop</Text>
+                </Pressable>
+                <Pressable
+                  style={styles.floatingPlayBtn}
+                  onPress={handleToggleTimer}
+                  hitSlop={6}
+                  accessibilityRole="button"
+                  accessibilityLabel="Start next session timer"
+                >
+                  <Text style={styles.floatingPlayText}>▶</Text>
+                </Pressable>
+              </>
+            ) : (
+              <>
+                <Pressable
+                  style={[
+                    styles.floatingPlayBtn,
+                    isRunning && styles.floatingPlayBtnActive,
+                  ]}
+                  onPress={handleToggleTimer}
+                  hitSlop={6}
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    isRunning ? 'Pause session timer' : 'Start session timer'
+                  }
+                >
+                  <Text style={styles.floatingPlayText}>
+                    {isRunning ? '⏸' : '▶'}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  style={styles.floatingCompleteBtn}
+                  onPress={handleCompleteSession}
+                  hitSlop={6}
+                  accessibilityRole="button"
+                  accessibilityLabel="Complete session and earn 5 points"
+                >
+                  <Text style={styles.floatingCompleteText}>✓ +5</Text>
+                </Pressable>
+              </>
+            )}
+          </View>
         </View>
       </KeyboardAvoidingView>
 
@@ -819,9 +1024,10 @@ const styles = StyleSheet.create({
   liveHeaderCard: {
     backgroundColor: COLORS.navy,
     borderColor: COLORS.navy,
-    marginBottom: 10,
-    gap: 5,
-    padding: 14,
+    marginBottom: 8,
+    gap: 4,
+    paddingHorizontal: 13,
+    paddingVertical: 10,
   },
   headerMetaRow: {
     flexDirection: 'row',
@@ -840,59 +1046,101 @@ const styles = StyleSheet.create({
     color: COLORS.cream,
   },
   roomTitle: {
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '800',
     color: COLORS.surface,
   },
-  timerRow: {
+  floatingTimerPill: {
+    position: 'absolute',
+    right: 16,
+    bottom: 16,
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginTop: 4,
-    gap: 10,
+    gap: 7,
+    backgroundColor: COLORS.navy,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 253, 249, 0.2)',
+    borderRadius: 999,
+    paddingLeft: 6,
+    paddingRight: 7,
+    paddingVertical: 5,
+    overflow: 'visible',
+    shadowColor: '#0F172A',
+    shadowOpacity: 0.22,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
   },
-  timerLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 0.8,
-    color: '#CBD5E1',
+  floatingTimerPillAlarm: {
+    borderColor: COLORS.coral,
+    borderWidth: 1.5,
   },
-  timerText: {
-    fontSize: 28,
+  floatingTimerPillAboveComposer: {
+    bottom: 124,
+  },
+  floatingMascotBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 2,
+  },
+  floatingMascotImage: {
+    width: 28,
+    height: 28,
+  },
+  floatingTimerReadout: {
+    fontSize: 13,
     fontWeight: '800',
     color: COLORS.cream,
     fontVariant: ['tabular-nums'],
   },
-  timerBtns: {
-    flexDirection: 'row',
-    gap: 8,
+  floatingTimerReadoutAlarm: {
+    color: COLORS.coral,
   },
-  timerBtn: {
+  floatingStopAlarmBtn: {
+    backgroundColor: COLORS.coralSoft,
+    borderWidth: 1,
+    borderColor: COLORS.coral,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 999,
+  },
+  floatingStopAlarmText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: COLORS.coral,
+  },
+  floatingPlayBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     backgroundColor: COLORS.coral,
-    paddingHorizontal: 14,
-    paddingVertical: 9,
-    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  timerBtnPaused: {
+  floatingPlayBtnActive: {
     backgroundColor: COLORS.navySoft,
     borderWidth: 1,
     borderColor: COLORS.coral,
   },
-  timerBtnText: {
+  floatingPlayText: {
+    fontSize: 11,
+    fontWeight: '800',
     color: COLORS.surface,
-    fontWeight: '700',
-    fontSize: 12,
   },
-  completeBtn: {
+  floatingCompleteBtn: {
     backgroundColor: COLORS.sage,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    borderRadius: 10,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 999,
   },
-  completeBtnText: {
+  floatingCompleteText: {
+    fontSize: 11,
+    fontWeight: '800',
     color: COLORS.surface,
-    fontWeight: '700',
-    fontSize: 12,
   },
   noticeBanner: {
     marginTop: 4,
@@ -1045,7 +1293,7 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
   gridListContent: {
-    paddingBottom: 16,
+    paddingBottom: 76,
     gap: 10,
   },
   gridRow: {
@@ -1062,7 +1310,7 @@ const styles = StyleSheet.create({
   },
   listContent: {
     gap: 9,
-    paddingBottom: 10,
+    paddingBottom: 76,
   },
   msgCard: {
     gap: 8,

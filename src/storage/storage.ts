@@ -1,9 +1,13 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
+  ActiveLiveAnswer,
+  ActiveLiveQuestion,
   AmbientChannelKey,
   AmbientMixerState,
+  LiveAnswerStatus,
   LiveMessageItem,
   LiveMessageKind,
+  LiveVoteChoice,
   QuestionItem,
   RoomCategory,
   StudyMode,
@@ -18,6 +22,7 @@ const KEYS = {
   ROOMS: '@studyble_rooms_v5',
   QUESTIONS: '@studyble_questions_v5',
   PROFILE: '@studyble_profile_v5',
+  BREAK_END_AT: '@studyble_break_end_at_ms_v1',
 } as const;
 
 const VALID_CATEGORIES: ReadonlyArray<RoomCategory> = [
@@ -27,7 +32,12 @@ const VALID_CATEGORIES: ReadonlyArray<RoomCategory> = [
   'Interest',
 ];
 
-const VALID_STUDY_MODES: ReadonlyArray<StudyMode> = ['avatar', 'desk', 'face'];
+const VALID_STUDY_MODES: ReadonlyArray<StudyMode> = [
+  'avatar',
+  'desk',
+  'face',
+  'screen',
+];
 
 const AMBIENT_KEYS: ReadonlyArray<AmbientChannelKey> = [
   'rain',
@@ -111,119 +121,189 @@ export const STUDY_COMPANION_BOTS: StudyParticipant[] = [
   },
 ];
 
+const LARGE_ROOM_PEER_COUNT = 99; // 99 peers + current user = 100 participants (7 slides of 16)
+
+const SEED_FIRST_NAMES = [
+  'Alya', 'Bima', 'Citra', 'Dimas', 'Eka', 'Farhan', 'Gita', 'Hana',
+  'Iqbal', 'Jihan', 'Kamil', 'Laras', 'Maulana', 'Nayla', 'Omar', 'Putri',
+  'Qori', 'Rafi', 'Siti', 'Tariq', 'Umar', 'Vina', 'Wildan', 'Yasmine',
+  'Zahra', 'Arif', 'Bella', 'Chandra', 'Dewi', 'Edo', 'Fika', 'Galih',
+];
+
+const SEED_LAST_NAMES = [
+  'Pratiwi', 'Santoso', 'Wijaya', 'Hidayat', 'Kusuma', 'Saputra', 'Lestari',
+  'Nugroho', 'Ramadhani', 'Maulida', 'Fauzan', 'Permata', 'Hakim', 'Azzahra',
+  'Setiawan', 'Anggraini', 'Purnama', 'Syahputra',
+];
+
+const SEED_STUDY_GOALS = [
+  'Binary trees', 'DP practice', 'SQL joins', 'Calc limits', 'Stats notes',
+  'Graph BFS/DFS', 'OS threads', 'Sorting quiz', 'Linear alg', 'UI wireframe',
+  'ER diagram', 'Big-O proofs', 'Micro econ', 'Essay draft', 'Flashcards',
+  'Regex drills', 'Git workflow', 'API design', 'Bayes theorem', 'Case study',
+];
+
+const SEED_EMOJIS = [
+  '🦊', '🐻', '🐰', '🦉', '🦋', '🐼', '🐱', '🐨',
+  '🐣', '🦁', '🐸', '🐙', '🦄', '🐝', '🐢', '🐳',
+];
+
+const SEED_MODES: ReadonlyArray<StudyMode> = ['avatar', 'desk', 'face'];
+const SEED_BADGES: ReadonlyArray<string | undefined> = [
+  undefined,
+  undefined,
+  'Pro at Math',
+  undefined,
+  'Pro at Statistics',
+  undefined,
+];
+
+function buildLargeRoomPeers(
+  basePeers: StudyParticipant[],
+  targetCount: number
+): StudyParticipant[] {
+  const result = [...basePeers];
+  for (let i = basePeers.length; i < targetCount; i += 1) {
+    const first = SEED_FIRST_NAMES[i % SEED_FIRST_NAMES.length];
+    const last =
+      SEED_LAST_NAMES[(Math.floor(i / 2) + i * 3) % SEED_LAST_NAMES.length];
+    const level = (i % 13) + 1;
+    const points = level * 10 + ((i * 3) % 9);
+    const privateChatEnabled = i % 3 === 0;
+    const badge = SEED_BADGES[i % SEED_BADGES.length];
+    const goal = SEED_STUDY_GOALS[i % SEED_STUDY_GOALS.length];
+    result.push({
+      id: `peer-r1-${i + 1}`,
+      name: `${first} ${last}`,
+      studyMode: SEED_MODES[i % SEED_MODES.length],
+      level,
+      points,
+      weeklyHelpfulCount: i % 5 === 0 ? (i % 6) + 1 : 0,
+      specialistBadge: badge,
+      currentGoal: goal,
+      privateChatEnabled,
+      privateChatMotif: privateChatEnabled
+        ? `Open to discuss ${goal}`
+        : undefined,
+      avatarEmoji: SEED_EMOJIS[i % SEED_EMOJIS.length],
+    });
+  }
+  return result;
+}
+
+const ROOM_1_BASE_PEERS: StudyParticipant[] = [
+  {
+    id: 'peer-nadia',
+    name: 'Nadia Putri',
+    studyMode: 'desk',
+    level: 11,
+    points: 118,
+    weeklyHelpfulCount: 15,
+    specialistBadge: 'Pro at Statistics',
+    currentGoal: 'Binary tree proofs',
+    privateChatEnabled: true,
+    privateChatMotif: 'Happy to walk through recursion or Statistics questions',
+    avatarEmoji: '🦊',
+  },
+  {
+    id: 'peer-raka',
+    name: 'Raka Pratama',
+    studyMode: 'face',
+    level: 8,
+    points: 84,
+    weeklyHelpfulCount: 11,
+    specialistBadge: 'Pro at Math',
+    currentGoal: 'DP & recurrences',
+    privateChatEnabled: true,
+    privateChatMotif: 'Open for Math & Big-O complexity help',
+    avatarEmoji: '🐻',
+  },
+  {
+    id: 'peer-dina',
+    name: 'Dina Kartika',
+    studyMode: 'avatar',
+    level: 5,
+    points: 52,
+    weeklyHelpfulCount: 7,
+    currentGoal: 'Hash Map vs BST',
+    privateChatEnabled: true,
+    privateChatMotif: 'Let us compare data structure notes together',
+    avatarEmoji: '🐰',
+  },
+  {
+    id: 'peer-bagas',
+    name: 'Bagas Mahendra',
+    studyMode: 'desk',
+    level: 3,
+    points: 34,
+    weeklyHelpfulCount: 4,
+    currentGoal: 'Dijkstra trace',
+    privateChatEnabled: false,
+    avatarEmoji: '🦉',
+  },
+  {
+    id: 'peer-clara',
+    name: 'Clara Wijaya',
+    studyMode: 'avatar',
+    level: 6,
+    points: 63,
+    weeklyHelpfulCount: 9,
+    specialistBadge: 'Pro at Math',
+    currentGoal: 'Graph cheat-sheet',
+    privateChatEnabled: true,
+    privateChatMotif: 'Can help with discrete math & graph proofs',
+    avatarEmoji: '🦋',
+  },
+  {
+    id: 'peer-ilham',
+    name: 'Ilham Ramadhan',
+    studyMode: 'face',
+    level: 1,
+    points: 14,
+    weeklyHelpfulCount: 2,
+    currentGoal: 'Linked list drills',
+    privateChatEnabled: false,
+    avatarEmoji: '🐼',
+  },
+];
+
 export const INITIAL_ROOMS: StudyRoom[] = [
   {
     id: 'room-1',
     title: 'Algorithm & Data Structures Focus',
     category: 'Course',
-    activeStudents: 14,
+    activeStudents: LARGE_ROOM_PEER_COUNT,
     focusMinutes: 25,
     isJoined: false,
-    participants: [
-      {
-        id: 'peer-nadia',
-        name: 'Nadia Putri',
-        studyMode: 'desk',
-        level: 11,
-        points: 118,
-        weeklyHelpfulCount: 15,
-        specialistBadge: 'Pro at Statistics',
-        currentGoal: 'Solving binary tree recursion & time complexity proofs',
-        privateChatEnabled: true,
-        privateChatMotif: 'Happy to walk through recursion or Statistics questions',
-        avatarEmoji: '🦊',
-      },
-      {
-        id: 'peer-raka',
-        name: 'Raka Pratama',
-        studyMode: 'face',
-        level: 8,
-        points: 84,
-        weeklyHelpfulCount: 11,
-        specialistBadge: 'Pro at Math',
-        currentGoal: 'Reviewing dynamic programming & recurrence relations',
-        privateChatEnabled: true,
-        privateChatMotif: 'Open for Math & Big-O complexity 1-on-1 help',
-        avatarEmoji: '🐻',
-      },
-      {
-        id: 'peer-dina',
-        name: 'Dina Kartika',
-        studyMode: 'avatar',
-        level: 5,
-        points: 52,
-        weeklyHelpfulCount: 7,
-        currentGoal: 'Comparing Hash Maps vs Balanced BST trade-offs',
-        privateChatEnabled: true,
-        privateChatMotif: 'Let us compare data structure notes together',
-        avatarEmoji: '🐰',
-      },
-      {
-        id: 'peer-bagas',
-        name: 'Bagas Mahendra',
-        studyMode: 'desk',
-        level: 3,
-        points: 34,
-        weeklyHelpfulCount: 4,
-        currentGoal: 'Tracing Dijkstra shortest path step-by-step',
-        privateChatEnabled: false,
-        avatarEmoji: '🦉',
-      },
-      {
-        id: 'peer-clara',
-        name: 'Clara Wijaya',
-        studyMode: 'avatar',
-        level: 6,
-        points: 63,
-        weeklyHelpfulCount: 9,
-        specialistBadge: 'Pro at Math',
-        currentGoal: 'Drafting clean graph traversal cheat-sheet for quiz',
-        privateChatEnabled: true,
-        privateChatMotif: 'Can help with discrete math & graph proofs',
-        avatarEmoji: '🦋',
-      },
-      {
-        id: 'peer-ilham',
-        name: 'Ilham Ramadhan',
-        studyMode: 'face',
-        level: 1,
-        points: 14,
-        weeklyHelpfulCount: 2,
-        currentGoal: 'Implementing linked list exercises quietly',
-        privateChatEnabled: false,
-        avatarEmoji: '🐼',
-      },
-    ],
+    participants: buildLargeRoomPeers(ROOM_1_BASE_PEERS, LARGE_ROOM_PEER_COUNT),
     messages: [
       {
         id: 'm-1',
         sender: 'Nadia Putri',
-        text: 'Apakah kompleksitas waktu binary search selalu O(log n) di worst case?',
+        text: 'Is binary search worst-case time complexity always O(log n)?',
         kind: 'question',
         votes: 5,
         hasVoted: false,
         verified: true,
+        status: 'accepted',
+        answererName: 'Raka Pratama',
+        answerText: 'Yes — each step halves the sorted search range, so worst-case complexity is always O(log n).',
+        upVotes: 5,
+        downVotes: 0,
+        resolutionNote: 'Accepted · Ready to use (+1 pt)',
         createdAt: '6m ago',
+        createdAtMs: 1700000001000,
       },
       {
         id: 'm-2',
         sender: 'Dina Kartika',
-        text: 'Kapan lebih baik menggunakan Hash Map dibanding Balanced BST untuk pencarian cepat?',
+        text: 'When is a Hash Map better than a Balanced BST for fast lookups?',
         kind: 'question',
         votes: 2,
         hasVoted: false,
         verified: false,
         createdAt: '3m ago',
-      },
-      {
-        id: 'm-3',
-        sender: 'Raka Pratama',
-        text: 'Sesi 25 menit pertama dimulai, semangat semuanya!',
-        kind: 'chat',
-        votes: 1,
-        hasVoted: false,
-        verified: false,
-        createdAt: '1m ago',
+        createdAtMs: 1700000002000,
       },
     ],
   },
@@ -358,7 +438,7 @@ export const INITIAL_ROOMS: StudyRoom[] = [
       {
         id: 'm-6',
         sender: 'Bima Aditya',
-        text: 'Kenapa state di React Native sebaiknya immutable saat di-update?',
+        text: 'Why should React Native state updates stay immutable?',
         kind: 'question',
         votes: 2,
         hasVoted: false,
@@ -366,6 +446,117 @@ export const INITIAL_ROOMS: StudyRoom[] = [
         createdAt: '3m ago',
       },
     ],
+  },
+  {
+    id: 'room-interest-art',
+    title: 'Art',
+    category: 'Interest',
+    coverImageUrl:
+      'https://images.unsplash.com/photo-1513364776144-60967b0f800f?auto=format&fit=crop&w=700&q=80',
+    activeStudents: 8,
+    focusMinutes: 25,
+    isJoined: false,
+    participants: [
+      {
+        id: 'peer-art-1',
+        name: 'Alya Pratiwi',
+        studyMode: 'desk',
+        level: 4,
+        points: 42,
+        weeklyHelpfulCount: 5,
+        currentGoal: 'Sketching anatomy studies',
+        privateChatEnabled: true,
+        privateChatMotif: 'Open for digital art & color palette chats',
+        avatarEmoji: '🎨',
+      },
+      {
+        id: 'peer-art-2',
+        name: 'Vina Lestari',
+        studyMode: 'avatar',
+        level: 3,
+        points: 31,
+        weeklyHelpfulCount: 2,
+        currentGoal: 'Watercolor shading practice',
+        privateChatEnabled: false,
+        avatarEmoji: '🦋',
+      },
+    ],
+    messages: [],
+  },
+  {
+    id: 'room-interest-food',
+    title: 'Food & Drink',
+    category: 'Interest',
+    coverImageUrl:
+      'https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?auto=format&fit=crop&w=700&q=80',
+    activeStudents: 6,
+    focusMinutes: 25,
+    isJoined: false,
+    participants: [
+      {
+        id: 'peer-food-1',
+        name: 'Hana Maulida',
+        studyMode: 'avatar',
+        level: 5,
+        points: 55,
+        weeklyHelpfulCount: 6,
+        currentGoal: 'Brewing notes & nutrition reading',
+        privateChatEnabled: true,
+        privateChatMotif: 'Love swapping coffee & meal-prep ideas',
+        avatarEmoji: '☕',
+      },
+    ],
+    messages: [],
+  },
+  {
+    id: 'room-interest-sports',
+    title: 'Sports & Gym',
+    category: 'Interest',
+    coverImageUrl:
+      'https://images.unsplash.com/photo-1517836357463-d25dfeac3438?auto=format&fit=crop&w=700&q=80',
+    activeStudents: 9,
+    focusMinutes: 25,
+    isJoined: false,
+    participants: [
+      {
+        id: 'peer-sports-1',
+        name: 'Dimas Santoso',
+        studyMode: 'face',
+        level: 6,
+        points: 64,
+        weeklyHelpfulCount: 7,
+        currentGoal: 'Sports science & training log',
+        privateChatEnabled: true,
+        privateChatMotif: 'Happy to share workout routine tips',
+        avatarEmoji: '🏃',
+      },
+    ],
+    messages: [],
+  },
+  {
+    id: 'room-interest-social',
+    title: 'Social Impact',
+    category: 'Interest',
+    coverImageUrl:
+      'https://images.unsplash.com/photo-1529156069898-49953e39b3ac?auto=format&fit=crop&w=700&q=80',
+    activeStudents: 7,
+    focusMinutes: 25,
+    isJoined: false,
+    participants: [
+      {
+        id: 'peer-social-1',
+        name: 'Nayla Azzahra',
+        studyMode: 'avatar',
+        level: 7,
+        points: 72,
+        weeklyHelpfulCount: 9,
+        currentGoal: 'Community project proposal',
+        privateChatEnabled: true,
+        privateChatMotif: 'Open for campus volunteer & social impact ideas',
+        avatarEmoji: '🌱',
+      },
+    ],
+    messages: [],
   },
 ];
 
@@ -410,6 +601,9 @@ export const INITIAL_PROFILE: StudyProfileState = {
   privateChatMotif: 'Siap bantu soal Statistik & Matematika dasar',
   specialistBadges: [],
   privateChatCooldowns: {},
+  dailyVerifiedDate: '',
+  dailyVerifiedCount: 0,
+  verifiedItemIds: [],
   ambientMixer: INITIAL_AMBIENT_MIXER,
 };
 
@@ -434,6 +628,11 @@ function normalizeMessage(raw: unknown, fallbackIndex: number): LiveMessageItem 
     kind = raw.isQuestion ? 'question' : 'chat';
   }
 
+  const status =
+    raw.status === 'accepted' || raw.status === 'discarded'
+      ? raw.status
+      : undefined;
+
   return {
     id: typeof raw.id === 'string' && raw.id ? raw.id : `m-restored-${fallbackIndex}`,
     sender: typeof raw.sender === 'string' && raw.sender.trim() ? raw.sender.trim() : 'Student',
@@ -441,8 +640,33 @@ function normalizeMessage(raw: unknown, fallbackIndex: number): LiveMessageItem 
     kind,
     votes,
     hasVoted: Boolean(raw.hasVoted),
-    verified: votes >= VERIFIED_VOTE_THRESHOLD,
+    verified: status === 'accepted' || votes >= VERIFIED_VOTE_THRESHOLD,
     createdAt: typeof raw.createdAt === 'string' && raw.createdAt ? raw.createdAt : 'Recently',
+    createdAtMs:
+      typeof raw.createdAtMs === 'number' && Number.isFinite(raw.createdAtMs)
+        ? raw.createdAtMs
+        : undefined,
+    status,
+    answerText:
+      typeof raw.answerText === 'string' && raw.answerText.trim()
+        ? raw.answerText.trim()
+        : undefined,
+    answererName:
+      typeof raw.answererName === 'string' && raw.answererName.trim()
+        ? raw.answererName.trim()
+        : undefined,
+    upVotes:
+      typeof raw.upVotes === 'number' && Number.isFinite(raw.upVotes)
+        ? Math.max(0, Math.floor(raw.upVotes))
+        : undefined,
+    downVotes:
+      typeof raw.downVotes === 'number' && Number.isFinite(raw.downVotes)
+        ? Math.max(0, Math.floor(raw.downVotes))
+        : undefined,
+    resolutionNote:
+      typeof raw.resolutionNote === 'string' && raw.resolutionNote.trim()
+        ? raw.resolutionNote.trim()
+        : undefined,
   };
 }
 
@@ -519,16 +743,117 @@ function normalizeRooms(raw: unknown): StudyRoom[] {
 
     const seedMatch = INITIAL_ROOMS.find((seed) => seed.id === item.id);
     const rawParticipants = Array.isArray(item.participants) ? item.participants : null;
-    const participants = rawParticipants
+    const normalizedParticipants = rawParticipants
       ? rawParticipants
           .map((p, idx) => normalizeParticipant(p, idx))
           .filter((p): p is StudyParticipant => p !== null)
       : seedMatch?.participants ?? [];
+    // Upgrade room-1 automatically when older cached storage had fewer than the 100-participant seed
+    const participants =
+      seedMatch &&
+      seedMatch.id === 'room-1' &&
+      normalizedParticipants.length < seedMatch.participants.length
+        ? seedMatch.participants
+        : normalizedParticipants;
+
+    const rawActiveQ = isRecord(item.activeLiveQuestion)
+      ? item.activeLiveQuestion
+      : null;
+    const activeLiveQuestion: ActiveLiveQuestion | null =
+      rawActiveQ &&
+      typeof rawActiveQ.id === 'string' &&
+      typeof rawActiveQ.text === 'string' &&
+      rawActiveQ.text.trim().length > 0
+        ? {
+            id: rawActiveQ.id,
+            roomId: item.id,
+            askerName:
+              typeof rawActiveQ.askerName === 'string' &&
+              rawActiveQ.askerName.trim()
+                ? rawActiveQ.askerName.trim()
+                : 'Student',
+            text: rawActiveQ.text.trim(),
+            createdAt:
+              typeof rawActiveQ.createdAt === 'string' && rawActiveQ.createdAt
+                ? rawActiveQ.createdAt
+                : 'Just now',
+          }
+        : null;
+
+    const rawActiveA = isRecord(item.activeLiveAnswer)
+      ? item.activeLiveAnswer
+      : null;
+    const validStatuses: ReadonlyArray<LiveAnswerStatus> = [
+      'voting',
+      'accepted',
+      'discarded',
+    ];
+    const activeLiveAnswer: ActiveLiveAnswer | null =
+      rawActiveA &&
+      typeof rawActiveA.id === 'string' &&
+      typeof rawActiveA.text === 'string' &&
+      rawActiveA.text.trim().length > 0
+        ? {
+            id: rawActiveA.id,
+            roomId: item.id,
+            questionId:
+              typeof rawActiveA.questionId === 'string'
+                ? rawActiveA.questionId
+                : '',
+            questionText:
+              typeof rawActiveA.questionText === 'string'
+                ? rawActiveA.questionText
+                : '',
+            askerName:
+              typeof rawActiveA.askerName === 'string'
+                ? rawActiveA.askerName
+                : 'Student',
+            answererName:
+              typeof rawActiveA.answererName === 'string'
+                ? rawActiveA.answererName
+                : 'Student',
+            answererIsSelf: Boolean(rawActiveA.answererIsSelf),
+            text: rawActiveA.text.trim(),
+            upVotes:
+              typeof rawActiveA.upVotes === 'number' &&
+              Number.isFinite(rawActiveA.upVotes)
+                ? Math.max(0, Math.floor(rawActiveA.upVotes))
+                : 0,
+            downVotes:
+              typeof rawActiveA.downVotes === 'number' &&
+              Number.isFinite(rawActiveA.downVotes)
+                ? Math.max(0, Math.floor(rawActiveA.downVotes))
+                : 0,
+            userVote:
+              rawActiveA.userVote === 'up' || rawActiveA.userVote === 'down'
+                ? (rawActiveA.userVote as LiveVoteChoice)
+                : null,
+            voteEndsAtMs:
+              typeof rawActiveA.voteEndsAtMs === 'number' &&
+              Number.isFinite(rawActiveA.voteEndsAtMs)
+                ? rawActiveA.voteEndsAtMs
+                : 0,
+            status: validStatuses.includes(
+              rawActiveA.status as LiveAnswerStatus
+            )
+              ? (rawActiveA.status as LiveAnswerStatus)
+              : 'voting',
+            pointAwarded: Boolean(rawActiveA.pointAwarded),
+            resolutionNote:
+              typeof rawActiveA.resolutionNote === 'string'
+                ? rawActiveA.resolutionNote
+                : undefined,
+          }
+        : null;
 
     parsed.push({
       id: item.id,
       title: item.title,
       category,
+      coverImageUrl:
+        typeof item.coverImageUrl === 'string' && item.coverImageUrl.trim()
+          ? item.coverImageUrl.trim()
+          : seedMatch?.coverImageUrl,
       activeStudents:
         typeof item.activeStudents === 'number' && Number.isFinite(item.activeStudents)
           ? Math.max(0, Math.floor(item.activeStudents))
@@ -540,10 +865,23 @@ function normalizeRooms(raw: unknown): StudyRoom[] {
       isJoined: Boolean(item.isJoined),
       messages,
       participants,
+      activeLiveQuestion,
+      activeLiveAnswer,
     });
   }
 
-  return parsed.length > 0 ? parsed : INITIAL_ROOMS;
+  if (parsed.length === 0) return INITIAL_ROOMS;
+
+  // Ensure existing cached storage receives the seed Interest rooms if none exist yet
+  const hasInterestRoom = parsed.some((room) => room.category === 'Interest');
+  if (!hasInterestRoom) {
+    const seedInterests = INITIAL_ROOMS.filter(
+      (room) => room.category === 'Interest'
+    );
+    return [...parsed, ...seedInterests];
+  }
+
+  return parsed;
 }
 
 function normalizeCooldowns(raw: unknown): Record<string, number> {
@@ -643,6 +981,22 @@ function normalizeProfile(raw: unknown): StudyProfileState {
         : INITIAL_PROFILE.privateChatMotif,
     specialistBadges,
     privateChatCooldowns: normalizeCooldowns(raw.privateChatCooldowns),
+    dailyVerifiedDate:
+      typeof raw.dailyVerifiedDate === 'string' ? raw.dailyVerifiedDate : '',
+    dailyVerifiedCount:
+      typeof raw.dailyVerifiedCount === 'number' &&
+      Number.isFinite(raw.dailyVerifiedCount)
+        ? Math.max(0, Math.floor(raw.dailyVerifiedCount))
+        : 0,
+    verifiedItemIds: Array.isArray(raw.verifiedItemIds)
+      ? Array.from(
+          new Set(
+            raw.verifiedItemIds.filter(
+              (id): id is string => typeof id === 'string' && id.trim().length > 0
+            )
+          )
+        )
+      : [],
     ambientMixer: normalizeAmbientMixer(raw.ambientMixer),
   };
 }
@@ -708,12 +1062,36 @@ export async function saveProfile(profile: StudyProfileState): Promise<void> {
   }
 }
 
+export async function loadBreakEndAtMs(): Promise<number | null> {
+  try {
+    const raw = await AsyncStorage.getItem(KEYS.BREAK_END_AT);
+    if (!raw) return null;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveBreakEndAtMs(endAtMs: number | null): Promise<void> {
+  try {
+    if (endAtMs === null) {
+      await AsyncStorage.removeItem(KEYS.BREAK_END_AT);
+    } else {
+      await AsyncStorage.setItem(KEYS.BREAK_END_AT, String(endAtMs));
+    }
+  } catch {
+    // Keep UI responsive if device storage write fails
+  }
+}
+
 export async function resetStudybleData(): Promise<void> {
   try {
     await Promise.all([
       AsyncStorage.setItem(KEYS.ROOMS, JSON.stringify(INITIAL_ROOMS)),
       AsyncStorage.setItem(KEYS.QUESTIONS, JSON.stringify(INITIAL_QUESTIONS)),
       AsyncStorage.setItem(KEYS.PROFILE, JSON.stringify(INITIAL_PROFILE)),
+      AsyncStorage.removeItem(KEYS.BREAK_END_AT),
     ]);
   } catch {
     // Ignore storage reset error and let in-memory state reset cleanly

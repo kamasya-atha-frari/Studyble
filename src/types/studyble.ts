@@ -2,7 +2,37 @@ export type RoomCategory = 'General' | 'Major' | 'Course' | 'Interest';
 
 export type LiveMessageKind = 'question' | 'chat';
 
-export type StudyMode = 'avatar' | 'desk' | 'face';
+export type LiveVoteChoice = 'up' | 'down';
+
+export type LiveAnswerStatus = 'voting' | 'accepted' | 'discarded';
+
+export interface ActiveLiveQuestion {
+  id: string;
+  roomId: string;
+  askerName: string;
+  text: string;
+  createdAt: string;
+}
+
+export interface ActiveLiveAnswer {
+  id: string;
+  roomId: string;
+  questionId: string;
+  questionText: string;
+  askerName: string;
+  answererName: string;
+  answererIsSelf: boolean;
+  text: string;
+  upVotes: number;
+  downVotes: number;
+  userVote: LiveVoteChoice | null;
+  voteEndsAtMs: number;
+  status: LiveAnswerStatus;
+  pointAwarded: boolean;
+  resolutionNote?: string;
+}
+
+export type StudyMode = 'avatar' | 'desk' | 'face' | 'screen';
 
 export type RankTitle = 'Pelajar' | 'Helper' | 'Pro Helper';
 
@@ -40,17 +70,27 @@ export interface LiveMessageItem {
   hasVoted: boolean;
   verified: boolean;
   createdAt: string;
+  createdAtMs?: number;
+  status?: 'accepted' | 'discarded';
+  answerText?: string;
+  answererName?: string;
+  upVotes?: number;
+  downVotes?: number;
+  resolutionNote?: string;
 }
 
 export interface StudyRoom {
   id: string;
   title: string;
   category: RoomCategory;
+  coverImageUrl?: string;
   activeStudents: number;
   focusMinutes: number;
   isJoined: boolean;
   messages: LiveMessageItem[];
   participants: StudyParticipant[];
+  activeLiveQuestion?: ActiveLiveQuestion | null;
+  activeLiveAnswer?: ActiveLiveAnswer | null;
 }
 
 export interface AnswerItem {
@@ -58,6 +98,8 @@ export interface AnswerItem {
   author: string;
   body: string;
   createdAt: string;
+  verified?: boolean;
+  verifiedBy?: string[];
 }
 
 export interface QuestionItem {
@@ -67,6 +109,7 @@ export interface QuestionItem {
   topic: string;
   votes: number;
   hasVoted: boolean;
+  verified?: boolean;
   answers: AnswerItem[];
 }
 
@@ -83,5 +126,8 @@ export interface StudyProfileState {
   privateChatMotif: string;
   specialistBadges: string[];
   privateChatCooldowns: Record<string, number>;
+  dailyVerifiedDate: string;
+  dailyVerifiedCount: number;
+  verifiedItemIds: string[];
   ambientMixer: AmbientMixerState;
 }
